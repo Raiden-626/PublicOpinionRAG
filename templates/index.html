@@ -1,0 +1,1025 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>B站用户舆情分析</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <style>
+    :root {
+      --bg: #f2f7f4;
+      --panel: #ffffff;
+      --panel2: #eef5f0;
+      --border: #d4e4da;
+      --text: #1e293b;
+      --muted: #6b7f72;
+      --brand: #1a7a5a;
+      --brand2: #2d9a7e;
+      --brand-light: #e8f5ee;
+      --ok: #16a34a;
+      --warn: #d97706;
+      --err: #dc2626;
+      --radius: 12px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --shadow: 0 1px 3px rgba(26,122,90,.08);
+    }
+
+    * { box-sizing: border-box }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased
+    }
+
+    .wrap {
+      max-width: 940px;
+      margin: 0 auto;
+      padding: 32px 20px 80px
+    }
+
+    h1 {
+      font-size: 22px;
+      margin: 0 0 2px;
+      letter-spacing: .3px;
+      color: var(--brand);
+      display: flex;
+      align-items: center;
+      gap: 10px
+    }
+
+    h1::before {
+      content: "";
+      display: inline-block;
+      width: 4px;
+      height: 22px;
+      background: var(--brand);
+      border-radius: 2px
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 24px
+    }
+
+    /* UID 栏 */
+    .uid-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow)
+    }
+
+    .uid-bar label {
+      font-size: 13px;
+      color: var(--brand);
+      font-weight: 600
+    }
+
+    .uid-bar input {
+      flex: 0 0 160px;
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 9px 12px;
+      font-size: 15px;
+      font-family: var(--mono);
+      transition: border-color .15s
+    }
+
+    .uid-bar input:focus {
+      outline: none;
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(26,122,90,.12)
+    }
+
+    .status {
+      font-size: 13px;
+      color: var(--muted);
+      flex: 1
+    }
+
+    .status b { color: var(--text) }
+
+    .status .chip {
+      display: inline-block;
+      background: var(--brand-light);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2px 10px;
+      margin: 0 4px;
+      color: var(--brand);
+      font-weight: 500
+    }
+
+    .sm-btn {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 8px;
+      padding: 7px 14px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: .15s;
+      white-space: nowrap
+    }
+
+    .sm-btn:hover {
+      border-color: var(--brand);
+      color: var(--brand);
+      background: var(--brand-light)
+    }
+
+    /* 问题栏(RAG 问答) */
+    .q-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      box-shadow: var(--shadow)
+    }
+
+    .q-bar label {
+      font-size: 13px;
+      color: var(--brand);
+      font-weight: 600;
+      white-space: nowrap
+    }
+
+    .q-bar input {
+      flex: 1;
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 9px 12px;
+      font-size: 14px;
+      min-width: 120px;
+      transition: border-color .15s
+    }
+
+    .q-bar input:focus {
+      outline: none;
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(26,122,90,.12)
+    }
+
+    /* 功能卡片 */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 20px
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      text-align: left;
+      cursor: pointer;
+      transition: .2s;
+      position: relative;
+      overflow: hidden;
+      box-shadow: var(--shadow)
+    }
+
+    .card:hover:not(:disabled) {
+      border-color: var(--brand);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(26,122,90,.12)
+    }
+
+    .card:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none
+    }
+
+    .card .num {
+      font-size: 11px;
+      color: var(--brand);
+      font-weight: 700;
+      letter-spacing: 1px
+    }
+
+    .card .t {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 3px 0 3px;
+      color: var(--text)
+    }
+
+    .card .d {
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .card.primary {
+      background: linear-gradient(135deg, #e8f5ee, #f0faf5);
+      border-color: var(--brand)
+    }
+
+    .card.primary .t { color: var(--brand) }
+
+    /* 结果面板 */
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 14px;
+      overflow: hidden;
+      display: none;
+      box-shadow: var(--shadow)
+    }
+
+    .panel.show { display: block }
+
+    .panel-hd {
+      display: flex;
+      align-items: center;
+      padding: 14px 18px;
+      cursor: pointer;
+      user-select: none;
+      background: var(--panel2);
+      border-bottom: 1px solid var(--border)
+    }
+
+    .panel-hd h3 {
+      margin: 0;
+      font-size: 14px;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text)
+    }
+
+    .panel-hd .meta {
+      margin-left: auto;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 400
+    }
+
+    .panel-hd .toggle {
+      color: var(--muted);
+      font-size: 18px;
+      margin-left: 12px;
+      transition: transform .2s
+    }
+
+    .panel-hd .toggle.collapsed { transform: rotate(-90deg) }
+
+    .panel-bd {
+      padding: 16px 18px 16px;
+      max-height: 70vh;
+      overflow-y: auto;
+    }
+
+    /* 加载 & 内容 */
+    .loading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      padding: 8px 0
+    }
+
+    .spin {
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--brand);
+      border-radius: 50%;
+      animation: sp .7s linear infinite
+    }
+
+    @keyframes sp { to { transform: rotate(360deg) } }
+
+    .md { font-size: 14px; color: var(--text) }
+
+    .md h1, .md h2, .md h3, .md h4 {
+      color: var(--brand);
+      margin: 18px 0 8px;
+      line-height: 1.35
+    }
+
+    .md h1 { font-size: 18px }
+    .md h2 { font-size: 16px }
+    .md h3 { font-size: 14.5px }
+    .md p { margin: 8px 0 }
+
+    .md ul, .md ol { margin: 8px 0; padding-left: 22px }
+    .md li { margin: 3px 0 }
+
+    .md code {
+      background: var(--panel2);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 12.5px
+    }
+
+    .md strong { color: var(--brand) }
+
+    .md blockquote {
+      border-left: 3px solid var(--brand);
+      margin: 10px 0;
+      padding: 2px 12px;
+      color: var(--muted);
+      background: var(--brand-light);
+      border-radius: 0 6px 6px 0
+    }
+
+    .md table { border-collapse: collapse; margin: 8px 0 }
+
+    .md th, .md td {
+      border: 1px solid var(--border);
+      padding: 6px 10px;
+      font-size: 13px
+    }
+
+    .md th { background: var(--panel2) }
+
+    /* 数据表格 */
+    table.data {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 6px
+    }
+
+    table.data th, table.data td {
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top
+    }
+
+    table.data th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px;
+      white-space: nowrap;
+      background: var(--panel2)
+    }
+
+    table.data td.c {
+      max-width: 420px;
+      word-break: break-word
+    }
+
+    .tag {
+      font-size: 11px;
+      padding: 1px 7px;
+      border-radius: 10px;
+      background: var(--brand-light);
+      border: 1px solid var(--border);
+      color: var(--muted)
+    }
+
+    .tag.cm { color: var(--brand); border-color: #1a7a5a44 }
+    .tag.dm { color: var(--warn); border-color: #d9770644 }
+
+    .cnt-grid {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 8px
+    }
+
+    .cnt-grid .b {
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 16px
+    }
+
+    .cnt-grid .b .n {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--brand)
+    }
+
+    .cnt-grid .b .l {
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    a { color: var(--brand2) }
+    a:hover { color: var(--brand) }
+
+    .err { color: var(--err); font-size: 13px }
+
+    .note { font-size: 12px; color: var(--muted); margin-top: 4px }
+
+    /* 来源引用 */
+    .sources {
+      margin-top: 14px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px
+    }
+
+    .sources h4 {
+      font-size: 13px;
+      color: var(--muted);
+      margin: 0 0 8px
+    }
+
+    .src-item {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 4px 0;
+      display: flex;
+      gap: 8px;
+      align-items: baseline
+    }
+
+    .src-item .idx {
+      color: var(--brand);
+      font-weight: 600;
+      min-width: 20px
+    }
+
+    .src-item .txt { flex: 1; color: var(--text); font-size: 12px }
+    .src-item .dt { color: var(--muted); white-space: nowrap }
+
+    /* 历史记录列表 */
+    .history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px
+    }
+
+    .history-item {
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px
+    }
+
+    .hi-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px
+    }
+
+    .hi-title {
+      flex: 1;
+      font-weight: 500;
+      color: var(--text)
+    }
+
+    .hi-time {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap
+    }
+
+    .hi-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end
+    }
+
+    .hi-actions button {
+      padding: 3px 10px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--panel);
+      color: var(--brand);
+      cursor: pointer
+    }
+
+    .hi-actions button:hover {
+      background: var(--brand-light)
+    }
+
+    .tag.ask { color: #7c3aed; border-color: #7c3aed44 }
+
+    /* 按钮通用 */
+    button { font-family: inherit }
+
+    /* 响应式 */
+    @media(max-width:680px) {
+      .cards { grid-template-columns: 1fr }
+      .uid-bar input, .q-bar input { flex: 1 1 120px }
+      .cnt-grid { gap: 10px }
+      .cnt-grid .b { padding: 8px 12px }
+      table.data { display: block; overflow-x: auto }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <h1>B站用户舆情分析</h1>
+    <div class="sub">输入 UID → 抓取评论/弹幕 → 分析关注 / 生成报告 / RAG 问答（DeepSeek 流式输出）</div>
+
+    <!-- UID 栏 -->
+    <div class="uid-bar">
+      <label>UID</label>
+      <input id="uid" type="text" inputmode="numeric" placeholder="请输入 UID" autocomplete="off" />
+      <button class="sm-btn" id="statusBtn">查询数据</button>
+      <button class="sm-btn" id="reEmbedBtn" title="补全 MySQL 中有但 Chroma 中缺失的向量">补全向量</button>
+      <span class="status" id="status"></span>
+    </div>
+
+    <!-- RAG 问答栏 -->
+    <div class="q-bar">
+      <label>RAG 问答</label>
+      <input id="question" type="text" placeholder="输入问题,如: 这个用户最近在吐槽什么?" autocomplete="off" />
+      <button class="card primary" id="btnAsk" style="padding:8px 16px" disabled>提问</button>
+    </div>
+
+    <!-- 功能卡片 -->
+    <div class="cards">
+      <button class="card primary" id="btnIngest">
+        <div class="num">功能 1</div>
+        <div class="t">抓取并入库</div>
+        <div class="d">抓取评论+弹幕,存入 MySQL + 向量库</div>
+      </button>
+      <button class="card" id="btnFocus" disabled>
+        <div class="num">功能 2</div>
+        <div class="t">最近在关注什么</div>
+        <div class="d">基于近期评论/弹幕,DeepSeek 归纳关注话题</div>
+      </button>
+      <button class="card" id="btnReport" disabled>
+        <div class="num">功能 3</div>
+        <div class="t">舆情分析报告</div>
+        <div class="d">涉猎方面 + 立场画像 + 行为预测(DeepSeek)</div>
+      </button>
+      <button class="card" id="btnAskCard" disabled onclick="document.getElementById('question').focus()">
+        <div class="num">功能 4</div>
+        <div class="t">语义检索问答</div>
+        <div class="d">向量召回相关评论,DeepSeek 基于原文回答</div>
+      </button>
+      <button class="card" id="btnHistory" disabled>
+        <div class="num">历史</div>
+        <div class="t">刷新历史记录</div>
+        <div class="d">查看该 UID 的生成历史(关注/报告/问答)</div>
+      </button>
+    </div>
+
+    <!-- 结果面板 -->
+    <div class="panel" id="pIngest">
+      <div class="panel-hd" onclick="togglePanel('pIngest')">
+        <h3>功能 1 · 抓取并入库 <span class="meta" id="ingestMeta"></span></h3>
+        <span class="toggle" id="pIngest_toggle">▾</span>
+      </div>
+      <div class="panel-bd" id="ingestBody"></div>
+    </div>
+
+    <div class="panel" id="pFocus">
+      <div class="panel-hd" onclick="togglePanel('pFocus')">
+        <h3>功能 2 · 最近在关注什么 <span class="meta" id="focusMeta"></span></h3>
+        <span class="toggle" id="pFocus_toggle">▾</span>
+      </div>
+      <div class="panel-bd" id="focusBody"></div>
+    </div>
+
+    <div class="panel" id="pReport">
+      <div class="panel-hd" onclick="togglePanel('pReport')">
+        <h3>功能 3 · 舆情分析报告 <span class="meta" id="reportMeta"></span></h3>
+        <span class="toggle" id="pReport_toggle">▾</span>
+      </div>
+      <div class="panel-bd" id="reportBody"></div>
+    </div>
+
+    <div class="panel" id="pAsk">
+      <div class="panel-hd" onclick="togglePanel('pAsk')">
+        <h3>功能 4 · 语义检索问答 <span class="meta" id="askMeta"></span></h3>
+        <span class="toggle" id="pAsk_toggle">▾</span>
+      </div>
+      <div class="panel-bd" id="askBody"></div>
+    </div>
+
+    <!-- 历史记录面板 -->
+    <div class="panel" id="pHistory">
+      <div class="panel-hd" onclick="togglePanel('pHistory')">
+        <h3>历史记录 <span class="meta" id="historyMeta"></span></h3>
+        <span class="toggle" id="pHistory_toggle">▾</span>
+      </div>
+      <div class="panel-bd" id="historyBody">
+        <div style="text-align:center;color:#999;padding:20px">输入 UID 后点击"刷新历史"查看</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const uidVal = () => $("uid").value.trim();
+    let hasData = false;  // 当前 UID 是否有数据
+
+    // ---- sessionStorage 持久化(刷新不丢失) ----
+    const SS_KEY = "bilibili_opinion";
+    function ssSave() {
+      try { sessionStorage.setItem(SS_KEY, JSON.stringify({ uid: $("uid").value, hasData })); } catch(e) {}
+    }
+    function ssSaveTask(taskKey, panelId, metaId, bodyId, kind) {
+      try {
+        const raw = sessionStorage.getItem(SS_KEY + "_tasks");
+        const tasks = raw ? JSON.parse(raw) : {};
+        tasks[taskKey] = { panelId, metaId, bodyId, kind };
+        sessionStorage.setItem(SS_KEY + "_tasks", JSON.stringify(tasks));
+      } catch(e) {}
+    }
+    function ssClearTask(taskKey) {
+      try {
+        const raw = sessionStorage.getItem(SS_KEY + "_tasks");
+        if (!raw) return;
+        const tasks = JSON.parse(raw);
+        delete tasks[taskKey];
+        sessionStorage.setItem(SS_KEY + "_tasks", JSON.stringify(tasks));
+      } catch(e) {}
+    }
+
+    // ---- 工具函数 ----
+    function showPanel(p) { $(p).classList.add("show"); }
+    function togglePanel(p) {
+      const bd = $(p).querySelector(".panel-bd");
+      const tg = $(p + "_toggle");
+      if (bd.style.display === "none") {
+        bd.style.display = ""; tg.classList.remove("collapsed");
+      } else {
+        bd.style.display = "none"; tg.classList.add("collapsed");
+      }
+    }
+    function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+    function renderMd(el, text) {
+      if (window.marked) { el.innerHTML = '<div class="md">' + marked.parse(text) + '</div>'; }
+      else { el.innerHTML = '<pre class="md" style="white-space:pre-wrap">' + escapeHtml(text) + '</pre>'; }
+    }
+
+    function updateButtons() {
+      $("btnFocus").disabled = !hasData;
+      $("btnReport").disabled = !hasData;
+      $("btnAsk").disabled = !hasData;
+      $("btnAskCard").disabled = !hasData;
+      $("btnHistory").disabled = !hasData;
+    }
+
+    // ---- 后台任务轮询(刷新不丢失) ----
+    async function pollTask(panelId, metaId, bodyId, path, body, onDone) {
+      const panel = $(panelId), meta = $(metaId), bd = $(bodyId);
+      showPanel(panelId);
+      panel.querySelector(".panel-bd").style.display = "";
+      panel.querySelector("#" + panelId + "_toggle")?.classList.remove("collapsed");
+
+      // 启动/重连任务
+      let r;
+      try {
+        r = await fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (e) {
+        bd.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+        return;
+      }
+      if (!r.ok) {
+        const t = await r.text();
+        bd.innerHTML = '<div class="err">' + escapeHtml(t || "HTTP " + r.status) + '</div>';
+        return;
+      }
+      const init = await r.json();
+      const taskId = init.task_id;
+      // 记录到 sessionStorage,刷新后可恢复
+      ssSaveTask(taskId, panelId, metaId, bodyId, path === "/api/focus" ? "focus" : path === "/api/report" ? "report" : "ask");
+
+      // 如果已有完整结果(之前已完成),直接渲染
+      if (init.status === "done" && init.text) {
+        bd.innerHTML = "";
+        renderMd(bd, init.text);
+        if (onDone) onDone(init, init.text);
+        ssClearTask(taskId);
+        return;
+      }
+
+      // 显示加载状态
+      bd.innerHTML = '<div class="loading"><span class="spin"></span>DeepSeek 正在思考…(刷新页面不会中断)</div>';
+      let t0 = Date.now();
+      const timer = setInterval(() => {
+        meta.textContent = "已耗时 " + Math.round((Date.now() - t0) / 1000) + "s";
+      }, 1000);
+      function stopTimer() {
+        clearInterval(timer);
+        const elapsed = Math.round((Date.now() - t0) / 1000);
+        meta.textContent = "耗时 " + elapsed + "s";
+      }
+
+      let lastLen = 0, started = false;
+      const poll = async () => {
+        try {
+          const r2 = await fetch('/api/task?task_id=' + encodeURIComponent(taskId));
+          const d = await r2.json();
+          if (d.status === "running") {
+            // 增量渲染
+            if (d.text && d.text.length > lastLen) {
+              if (!started) { started = true; bd.innerHTML = ""; }
+              renderMd(bd, d.text);
+              lastLen = d.text.length;
+            }
+            setTimeout(poll, 500);
+          } else if (d.status === "done") {
+            stopTimer();
+            if (d.text) {
+              renderMd(bd, d.text);
+            } else {
+              bd.innerHTML = '<div class="err">生成完成但内容为空</div>';
+            }
+            if (onDone) onDone(d, d.text || "");
+            ssClearTask(taskId);
+          } else if (d.status === "failed") {
+            stopTimer();
+            bd.innerHTML = '<div class="err">' + escapeHtml(d.error || "生成失败") + '</div>';
+            ssClearTask(taskId);
+          } else {
+            stopTimer();
+            bd.innerHTML = '<div class="err">未知状态</div>';
+          }
+        } catch (e) {
+          stopTimer();
+          bd.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+        }
+      };
+      setTimeout(poll, 300);
+    }
+
+    // ---- 查询状态 ----
+    $("statusBtn").onclick = async () => {
+      const uid = uidVal();
+      if (!/^\d+$/.test(uid)) { $("status").innerHTML = '<span class="err">请输入数字 UID</span>'; return; }
+      $("status").innerHTML = '<span class="loading"><span class="spin"></span>查询中</span>';
+      try {
+        const r = await fetch('/api/status?uid=' + uid);
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error);
+        const c = j.counts;
+        hasData = (c.comment + c.danmu) > 0;
+        updateButtons();
+        ssSave();
+        $("status").innerHTML = '已有 <b><span class="chip cm">评论 ' + c.comment + '</span><span class="chip dm">弹幕 ' + c.danmu + '</span></b>';
+      } catch (e) {
+        $("status").innerHTML = '<span class="err">' + escapeHtml(e.message) + '</span>';
+      }
+    };
+
+    // ---- 补全向量 ----
+    $("reEmbedBtn").onclick = async () => {
+      const uid = uidVal();
+      if (!/^\d+$/.test(uid)) { alert("请先输入数字 UID"); return; }
+      $("status").innerHTML = '<span class="loading"><span class="spin"></span>正在扫描并补全缺失向量…</span>';
+      try {
+        const r = await fetch("/api/re_embed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uid }) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error);
+        const c = j.comment || {}, d = j.danmu || {};
+        $("status").innerHTML = '补全: 评论 ' + (c.embedded || 0) + '/' + (c.missing || 0) + ' · 弹幕 ' + (d.embedded || 0) + '/' + (d.missing || 0);
+      } catch (e) {
+        $("status").innerHTML = '<span class="err">' + escapeHtml(e.message) + '</span>';
+      }
+    };
+
+    // ---- 功能1: 抓取入库(非流式,耗时操作) ----
+    $("btnIngest").onclick = async () => {
+      const uid = uidVal();
+      if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
+      showPanel("pIngest");
+      $("ingestBody").innerHTML = '<div class="loading"><span class="spin"></span>正在抓取,约 1-2 分钟(浏览器会自动打开抓取页面,请勿关闭)…</div>';
+      let t0 = Date.now(), timer = setInterval(() => {
+        $("ingestMeta").textContent = "已耗时 " + Math.round((Date.now() - t0) / 1000) + "s";
+      }, 1000);
+      try {
+        const r = await fetch("/api/ingest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uid }) });
+        const j = await r.json();
+        clearInterval(timer);
+        if (!r.ok) throw new Error(j.error);
+        const f = j.fetched || {}, i = j.inserted || {}, s = j.samples || {};
+        $("ingestMeta").textContent = '抓取 评论' + (f.comment || 0) + '/弹幕' + (f.danmu || 0) + ' · 新增 评论' + (i.comment || 0) + '/弹幕' + (i.danmu || 0);
+        hasData = true;
+        updateButtons();
+        ssSave();
+        let html = '<div class="cnt-grid">' +
+          '<div class="b"><div class="n">' + ((j.counts || {}).comment ?? '-') + '</div><div class="l">库内评论总数</div></div>' +
+          '<div class="b"><div class="n">' + ((j.counts || {}).danmu ?? '-') + '</div><div class="l">库内弹幕总数</div></div>' +
+          '</div>';
+        html += sampleTable("评论", s.comment, "cm");
+        html += sampleTable("弹幕", s.danmu, "dm");
+        $("ingestBody").innerHTML = html;
+      } catch (e) {
+        clearInterval(timer);
+        $("ingestMeta").textContent = "";
+        $("ingestBody").innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+      }
+    };
+
+    function sampleTable(title, rows, cls) {
+      if (!rows || !rows.length) return "";
+      let h = '<h3 style="margin-top:14px"><span class="tag ' + cls + '">' + title + '</span> 样本(前 ' + rows.length + ' 条)</h3>';
+      h += '<table class="data"><tr><th>时间</th><th>内容</th>' + (title === "评论" ? '<th>赞</th>' : '<th>偏移</th>') + '<th>链接</th></tr>';
+      for (const r of rows) {
+        const extra = title === "评论" ? (r.like_count != null ? r.like_count : "-") : (r.video_offset != null ? r.video_offset + "s" : "-");
+        h += '<tr><td style="white-space:nowrap">' + (r.ctime || "-") + '</td>' +
+          '<td class="c">' + escapeHtml(r.content) + '</td>' +
+          '<td>' + extra + '</td>' +
+          '<td>' + (r.url ? '<a href="' + r.url + '" target="_blank">查看</a>' : "-") + '</td></tr>';
+      }
+      return h + '</table>';
+    }
+
+    // ---- 功能2: 最近关注(后台任务+轮询) ----
+    $("btnFocus").onclick = () => {
+      const uid = uidVal();
+      if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
+      pollTask("pFocus", "focusMeta", "focusBody", "/api/focus", { uid }, (ev) => {
+        const c = ev.counts || {};
+        $("focusMeta").textContent = '评论' + (c.comment || 0) + '/弹幕' + (c.danmu || 0);
+      });
+    };
+
+    // ---- 功能3: 舆情报告(后台任务+轮询) ----
+    $("btnReport").onclick = () => {
+      const uid = uidVal();
+      if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
+      pollTask("pReport", "reportMeta", "reportBody", "/api/report", { uid }, (ev) => {
+        const c = ev.counts || {};
+        $("reportMeta").textContent = '评论' + (c.comment || 0) + '/弹幕' + (c.danmu || 0);
+      });
+    };
+
+    // ---- 功能4: RAG 问答(后台任务+轮询) ----
+    function doAsk() {
+      const uid = uidVal();
+      const q = $("question").value.trim();
+      if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
+      if (!q) { alert("请输入问题"); return; }
+      pollTask("pAsk", "askMeta", "askBody", "/api/ask", { uid, question: q }, (ev, text) => {
+        $("askMeta").textContent = '问题: ' + q;
+        // 渲染来源引用
+        if (ev.sources && ev.sources.length) {
+          let sh = '<div class="sources"><h4>参考来源 (' + ev.sources.length + ' 条)</h4>';
+          ev.sources.forEach((s, i) => {
+            const dt = s.ctime || "";
+            const txt = (s.content || "").slice(0, 80) + (s.content.length > 80 ? "…" : "");
+            sh += '<div class="src-item"><span class="idx">[' + (i + 1) + ']</span>' +
+              '<span class="dt">' + escapeHtml(dt) + '</span>' +
+              '<span class="txt">' + escapeHtml(txt) + '</span>' +
+              (s.url ? '<a href="' + s.url + '" target="_blank" style="white-space:nowrap">原文</a>' : '') +
+              '</div>';
+          });
+          sh += '</div>';
+          $("askBody").insertAdjacentHTML("beforeend", sh);
+        }
+      });
+    }
+    $("btnAsk").onclick = doAsk;
+    $("question").addEventListener("keydown", e => { if (e.key === "Enter") doAsk(); });
+
+    // ---- 历史记录功能 ----
+    async function loadHistory(kind) {
+      const uid = uidVal();
+      if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
+      showPanel("pHistory");
+      const bd = $("historyBody");
+      bd.innerHTML = '<div class="loading"><span class="spin"></span>加载中…</div>';
+      try {
+        let url = "/api/history?uid=" + uid;
+        if (kind) url += "&kind=" + kind;
+        const r = await fetch(url);
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error);
+        renderHistoryList(j.records || []);
+      } catch (e) {
+        bd.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    function renderHistoryList(records) {
+      const bd = $("historyBody");
+      if (!records.length) {
+        bd.innerHTML = '<div style="text-align:center;color:#999;padding:20px">暂无历史记录</div>';
+        return;
+      }
+      let h = '<div style="margin-bottom:12px;color:#666">共 ' + records.length + ' 条记录</div>';
+      h += '<div class="history-list">';
+      for (const rec of records) {
+        const kindLabel = rec.kind === "focus" ? "关注" : rec.kind === "report" ? "报告" : "问答";
+        const kindClass = rec.kind === "focus" ? "tag cm" : rec.kind === "report" ? "tag dm" : "tag ask";
+        const title = rec.title || "(无标题)";
+        const time = rec.created_at || "";
+        h += '<div class="history-item">' +
+          '<div class="hi-header">' +
+            '<span class="' + kindClass + '">' + kindLabel + '</span>' +
+            '<span class="hi-title">' + escapeHtml(title) + '</span>' +
+            '<span class="hi-time">' + escapeHtml(time) + '</span>' +
+          '</div>' +
+          '<div class="hi-actions">' +
+            '<button onclick="viewHistoryRecord(' + rec.id + ')">查看</button>' +
+            '<button onclick="deleteHistoryRecord(' + rec.id + ')" style="color:#f44336">删除</button>' +
+          '</div>' +
+        '</div>';
+      }
+      h += '</div>';
+      bd.innerHTML = h;
+    }
+
+    async function viewHistoryRecord(id) {
+      const uid = uidVal();
+      if (!/^\d+$/.test(uid)) { alert("UID 无效"); return; }
+      try {
+        const r = await fetch("/api/history/" + id + "?uid=" + uid);
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error);
+        const rec = j.record;
+        showPanel("pHistory");
+        const bd = $("historyBody");
+        let h = '<div style="margin-bottom:12px">' +
+          '<button onclick="loadHistory()">← 返回列表</button>' +
+          '<span style="float:right;color:#999">' + escapeHtml(rec.created_at || "") + '</span>' +
+        '</div>';
+        h += '<h3><span class="tag ' + (rec.kind === "focus" ? "cm" : rec.kind === "report" ? "dm" : "ask") + '">' +
+          (rec.kind === "focus" ? "关注" : rec.kind === "report" ? "报告" : "问答") +
+        '</span> ' + escapeHtml(rec.title || "") + '</h3>';
+        h += '<div class="md">' + (window.marked ? marked.parse(rec.content) : '<pre style="white-space:pre-wrap">' + escapeHtml(rec.content) + '</pre>') + '</div>';
+        bd.innerHTML = h;
+      } catch (e) {
+        alert("加载失败: " + e.message);
+      }
+    }
+
+    async function deleteHistoryRecord(id) {
+      if (!confirm("确定删除这条历史记录吗？")) return;
+      const uid = uidVal();
+      if (!/^\d+$/.test(uid)) { alert("UID 无效"); return; }
+      try {
+        const r = await fetch("/api/history/" + id + "?uid=" + uid, { method: "DELETE" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error);
+        loadHistory(); // 刷新列表
+      } catch (e) {
+        alert("删除失败: " + e.message);
+      }
+    }
+
+    // 绑定历史按钮点击事件
+    $("btnHistory").onclick = () => loadHistory();
+
+    // ---- 回车触发状态查询 ----
+    $("uid").addEventListener("keydown", e => { if (e.key === "Enter") $("statusBtn").click(); });
+
+    // ---- 页面加载恢复(刷新不丢失) ----
+    (function restore() {
+      try {
+        const raw = sessionStorage.getItem(SS_KEY);
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (saved.uid) {
+          $("uid").value = saved.uid;
+          hasData = !!saved.hasData;
+          updateButtons();
+          // 自动查询状态
+          $("statusBtn").click();
+        }
+        // 恢复未完成的任务
+        const tasksRaw = sessionStorage.getItem(SS_KEY + "_tasks");
+        if (!tasksRaw) return;
+        const tasks = JSON.parse(tasksRaw);
+        for (const [taskKey, info] of Object.entries(tasks)) {
+          const uid = saved.uid || "";
+          if (!uid) continue;
+          const path = info.kind === "focus" ? "/api/focus" : info.kind === "report" ? "/api/report" : "/api/ask";
+          const body = info.kind === "ask" ? { uid, question: taskKey.replace(/^ask_\d+_/, "") } : { uid };
+          pollTask(info.panelId, info.metaId, info.bodyId, path, body);
+        }
+      } catch(e) {}
+    })();
+  </script>
+</body>
+
+</html>
