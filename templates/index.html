@@ -22,10 +22,12 @@
       --err: #dc2626;
       --radius: 12px;
       --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      --shadow: 0 1px 3px rgba(26,122,90,.08);
+      --shadow: 0 1px 3px rgba(26, 122, 90, .08);
     }
 
-    * { box-sizing: border-box }
+    * {
+      box-sizing: border-box
+    }
 
     body {
       margin: 0;
@@ -102,7 +104,7 @@
     .uid-bar input:focus {
       outline: none;
       border-color: var(--brand);
-      box-shadow: 0 0 0 3px rgba(26,122,90,.12)
+      box-shadow: 0 0 0 3px rgba(26, 122, 90, .12)
     }
 
     .status {
@@ -111,7 +113,9 @@
       flex: 1
     }
 
-    .status b { color: var(--text) }
+    .status b {
+      color: var(--text)
+    }
 
     .status .chip {
       display: inline-block;
@@ -178,7 +182,7 @@
     .q-bar input:focus {
       outline: none;
       border-color: var(--brand);
-      box-shadow: 0 0 0 3px rgba(26,122,90,.12)
+      box-shadow: 0 0 0 3px rgba(26, 122, 90, .12)
     }
 
     /* 功能卡片 */
@@ -205,7 +209,7 @@
     .card:hover:not(:disabled) {
       border-color: var(--brand);
       transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(26,122,90,.12)
+      box-shadow: 0 4px 12px rgba(26, 122, 90, .12)
     }
 
     .card:disabled {
@@ -239,7 +243,9 @@
       border-color: var(--brand)
     }
 
-    .card.primary .t { color: var(--brand) }
+    .card.primary .t {
+      color: var(--brand)
+    }
 
     /* 结果面板 */
     .panel {
@@ -252,7 +258,9 @@
       box-shadow: var(--shadow)
     }
 
-    .panel.show { display: block }
+    .panel.show {
+      display: block
+    }
 
     .panel-hd {
       display: flex;
@@ -288,7 +296,9 @@
       transition: transform .2s
     }
 
-    .panel-hd .toggle.collapsed { transform: rotate(-90deg) }
+    .panel-hd .toggle.collapsed {
+      transform: rotate(-90deg)
+    }
 
     .panel-bd {
       padding: 16px 18px 16px;
@@ -315,23 +325,51 @@
       animation: sp .7s linear infinite
     }
 
-    @keyframes sp { to { transform: rotate(360deg) } }
+    @keyframes sp {
+      to {
+        transform: rotate(360deg)
+      }
+    }
 
-    .md { font-size: 14px; color: var(--text) }
+    .md {
+      font-size: 14px;
+      color: var(--text)
+    }
 
-    .md h1, .md h2, .md h3, .md h4 {
+    .md h1,
+    .md h2,
+    .md h3,
+    .md h4 {
       color: var(--brand);
       margin: 18px 0 8px;
       line-height: 1.35
     }
 
-    .md h1 { font-size: 18px }
-    .md h2 { font-size: 16px }
-    .md h3 { font-size: 14.5px }
-    .md p { margin: 8px 0 }
+    .md h1 {
+      font-size: 18px
+    }
 
-    .md ul, .md ol { margin: 8px 0; padding-left: 22px }
-    .md li { margin: 3px 0 }
+    .md h2 {
+      font-size: 16px
+    }
+
+    .md h3 {
+      font-size: 14.5px
+    }
+
+    .md p {
+      margin: 8px 0
+    }
+
+    .md ul,
+    .md ol {
+      margin: 8px 0;
+      padding-left: 22px
+    }
+
+    .md li {
+      margin: 3px 0
+    }
 
     .md code {
       background: var(--panel2);
@@ -341,7 +379,9 @@
       font-size: 12.5px
     }
 
-    .md strong { color: var(--brand) }
+    .md strong {
+      color: var(--brand)
+    }
 
     .md blockquote {
       border-left: 3px solid var(--brand);
@@ -352,15 +392,21 @@
       border-radius: 0 6px 6px 0
     }
 
-    .md table { border-collapse: collapse; margin: 8px 0 }
+    .md table {
+      border-collapse: collapse;
+      margin: 8px 0
+    }
 
-    .md th, .md td {
+    .md th,
+    .md td {
       border: 1px solid var(--border);
       padding: 6px 10px;
       font-size: 13px
     }
 
-    .md th { background: var(--panel2) }
+    .md th {
+      background: var(--panel2)
+    }
 
     /* 数据表格 */
     table.data {
@@ -370,7 +416,8 @@
       margin-top: 6px
     }
 
-    table.data th, table.data td {
+    table.data th,
+    table.data td {
       padding: 8px 10px;
       text-align: left;
       border-bottom: 1px solid var(--border);
@@ -399,8 +446,15 @@
       color: var(--muted)
     }
 
-    .tag.cm { color: var(--brand); border-color: #1a7a5a44 }
-    .tag.dm { color: var(--warn); border-color: #d9770644 }
+    .tag.cm {
+      color: var(--brand);
+      border-color: #1a7a5a44
+    }
+
+    .tag.dm {
+      color: var(--warn);
+      border-color: #d9770644
+    }
 
     .cnt-grid {
       display: flex;
@@ -427,12 +481,24 @@
       color: var(--muted)
     }
 
-    a { color: var(--brand2) }
-    a:hover { color: var(--brand) }
+    a {
+      color: var(--brand2)
+    }
 
-    .err { color: var(--err); font-size: 13px }
+    a:hover {
+      color: var(--brand)
+    }
 
-    .note { font-size: 12px; color: var(--muted); margin-top: 4px }
+    .err {
+      color: var(--err);
+      font-size: 13px
+    }
+
+    .note {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px
+    }
 
     /* 来源引用 */
     .sources {
@@ -462,8 +528,16 @@
       min-width: 20px
     }
 
-    .src-item .txt { flex: 1; color: var(--text); font-size: 12px }
-    .src-item .dt { color: var(--muted); white-space: nowrap }
+    .src-item .txt {
+      flex: 1;
+      color: var(--text);
+      font-size: 12px
+    }
+
+    .src-item .dt {
+      color: var(--muted);
+      white-space: nowrap
+    }
 
     /* 历史记录列表 */
     .history-list {
@@ -518,18 +592,39 @@
       background: var(--brand-light)
     }
 
-    .tag.ask { color: #7c3aed; border-color: #7c3aed44 }
+    .tag.ask {
+      color: #7c3aed;
+      border-color: #7c3aed44
+    }
 
     /* 按钮通用 */
-    button { font-family: inherit }
+    button {
+      font-family: inherit
+    }
 
     /* 响应式 */
     @media(max-width:680px) {
-      .cards { grid-template-columns: 1fr }
-      .uid-bar input, .q-bar input { flex: 1 1 120px }
-      .cnt-grid { gap: 10px }
-      .cnt-grid .b { padding: 8px 12px }
-      table.data { display: block; overflow-x: auto }
+      .cards {
+        grid-template-columns: 1fr
+      }
+
+      .uid-bar input,
+      .q-bar input {
+        flex: 1 1 120px
+      }
+
+      .cnt-grid {
+        gap: 10px
+      }
+
+      .cnt-grid .b {
+        padding: 8px 12px
+      }
+
+      table.data {
+        display: block;
+        overflow-x: auto
+      }
     }
   </style>
 </head>
@@ -637,7 +732,7 @@
     // ---- sessionStorage 持久化(刷新不丢失) ----
     const SS_KEY = "bilibili_opinion";
     function ssSave() {
-      try { sessionStorage.setItem(SS_KEY, JSON.stringify({ uid: $("uid").value, hasData })); } catch(e) {}
+      try { sessionStorage.setItem(SS_KEY, JSON.stringify({ uid: $("uid").value, hasData })); } catch (e) { }
     }
     function ssSaveTask(taskKey, panelId, metaId, bodyId, kind) {
       try {
@@ -645,7 +740,7 @@
         const tasks = raw ? JSON.parse(raw) : {};
         tasks[taskKey] = { panelId, metaId, bodyId, kind };
         sessionStorage.setItem(SS_KEY + "_tasks", JSON.stringify(tasks));
-      } catch(e) {}
+      } catch (e) { }
     }
     function ssClearTask(taskKey) {
       try {
@@ -654,7 +749,7 @@
         const tasks = JSON.parse(raw);
         delete tasks[taskKey];
         sessionStorage.setItem(SS_KEY + "_tasks", JSON.stringify(tasks));
-      } catch(e) {}
+      } catch (e) { }
     }
 
     // ---- 工具函数 ----
@@ -935,15 +1030,15 @@
         const time = rec.created_at || "";
         h += '<div class="history-item">' +
           '<div class="hi-header">' +
-            '<span class="' + kindClass + '">' + kindLabel + '</span>' +
-            '<span class="hi-title">' + escapeHtml(title) + '</span>' +
-            '<span class="hi-time">' + escapeHtml(time) + '</span>' +
+          '<span class="' + kindClass + '">' + kindLabel + '</span>' +
+          '<span class="hi-title">' + escapeHtml(title) + '</span>' +
+          '<span class="hi-time">' + escapeHtml(time) + '</span>' +
           '</div>' +
           '<div class="hi-actions">' +
-            '<button onclick="viewHistoryRecord(' + rec.id + ')">查看</button>' +
-            '<button onclick="deleteHistoryRecord(' + rec.id + ')" style="color:#f44336">删除</button>' +
+          '<button onclick="viewHistoryRecord(' + rec.id + ')">查看</button>' +
+          '<button onclick="deleteHistoryRecord(' + rec.id + ')" style="color:#f44336">删除</button>' +
           '</div>' +
-        '</div>';
+          '</div>';
       }
       h += '</div>';
       bd.innerHTML = h;
@@ -962,10 +1057,10 @@
         let h = '<div style="margin-bottom:12px">' +
           '<button onclick="loadHistory()">← 返回列表</button>' +
           '<span style="float:right;color:#999">' + escapeHtml(rec.created_at || "") + '</span>' +
-        '</div>';
+          '</div>';
         h += '<h3><span class="tag ' + (rec.kind === "focus" ? "cm" : rec.kind === "report" ? "dm" : "ask") + '">' +
           (rec.kind === "focus" ? "关注" : rec.kind === "report" ? "报告" : "问答") +
-        '</span> ' + escapeHtml(rec.title || "") + '</h3>';
+          '</span> ' + escapeHtml(rec.title || "") + '</h3>';
         h += '<div class="md">' + (window.marked ? marked.parse(rec.content) : '<pre style="white-space:pre-wrap">' + escapeHtml(rec.content) + '</pre>') + '</div>';
         bd.innerHTML = h;
       } catch (e) {
@@ -1017,7 +1112,7 @@
           const body = info.kind === "ask" ? { uid, question: taskKey.replace(/^ask_\d+_/, "") } : { uid };
           pollTask(info.panelId, info.metaId, info.bodyId, path, body);
         }
-      } catch(e) {}
+      } catch (e) { }
     })();
   </script>
 </body>
