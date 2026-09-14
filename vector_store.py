@@ -13,6 +13,11 @@ _collection = _client.get_or_create_collection(
 
 def add(ids, embeddings, documents, metadatas):
     """批量写入向量。四个参数均为等长 list。"""
+    # 检查 ID 格式(警告但不阻止写入)
+    invalid_count = sum(1 for id_str in ids if not _validate_id_format(id_str))
+    if invalid_count > 0:
+        print(f"[WARNING] add() 中有 {invalid_count} 条 ID 使用旧格式(应为 kind_uid_mysqlid)")
+
     _collection.add(
         ids=ids,
         embeddings=embeddings,
@@ -78,13 +83,16 @@ def _filter_by_uid(metadatas, uid, mysql_table=None):
     """在 Python 侧按 uid(及可选 mysql_table)过滤 metadata 列表。
     同时匹配 int 和 str 两种类型,防止 Chroma 存成字符串。
     返回满足条件的 (index, metadata) 对列表。
+    若 uid 为 None,则不按 uid 过滤(返回全部或仅按 mysql_table 过滤)。
     """
-    uid_int, uid_str = int(uid), str(uid)
     hits = []
+    uid_int, uid_str = (None, None) if uid is None else (int(uid), str(uid))
+
     for i, m in enumerate(metadatas):
-        u = m.get("uid")
-        if u != uid_int and u != uid_str:
-            continue
+        if uid is not None:
+            u = m.get("uid")
+            if u != uid_int and u != uid_str:
+                continue
         if mysql_table is not None and m.get("mysql_table") != mysql_table:
             continue
         hits.append(i)
@@ -136,3 +144,104 @@ def count_by_uid(uid, kind=None):
 
     table_prefix = f"bilibili_{kind}_"
     return sum(1 for i in indices if all_metas[i].get("mysql_table", "").startswith(table_prefix))
+
+
+# ---- 数据一致性工具 ----
+
+def _validate_id_format(id_str):
+    """检查 ID 是否符合新格式: {kind}_{uid}_{mysql_id}。
+    新格式至少有 2 个下划线,且 uid 和 mysql_id 都是数字。
+    """
+    parts = id_str.split("_")
+    if len(parts) < 3:
+        return False
+    # kind 是第一部分(如 comment, danmu)
+    # uid 是第二部分,mysql_id 是第三部分(或更多,如果 mysql_id 本身含下划线)
+    # 简单检查: 至少 3 部分,后两部分应该是数字
+    try:
+        int(parts[1])  # uid
+        int(parts[2])  # mysql_id (至少第一部分)
+        return True
+    except ValueError:
+        return False
+
+
+def delete(ids):
+    """按 ID 列表删除记录。返回实际删除的数量。"""
+    if not ids:
+        return 0
+    # 分批删除(Chroma 对大批量删除可能有限制)
+    batch_size = 100
+    deleted = 0
+    for i in range(0, len(ids), batch_size):
+        batch = ids[i:i+batch_size]
+        _collection.delete(ids=batch)
+        deleted += len(batch)
+    return deleted
+
+
+def diagnose():
+    """诊断 Chroma 中的数据一致性问题。
+    返回 dict: {total, valid, invalid, invalid_ids, uid_distribution, table_issues}
+    """
+    all_data = _get_all()
+    ids = all_data["ids"]
+    metas = all_data.get("metadatas") or []
+
+    valid_ids = []
+    invalid_ids = []
+    uid_counts = {}
+    table_issues = []
+
+    for id_str, meta in zip(ids, metas):
+        # 检查 ID 格式
+        if _validate_id_format(id_str):
+            valid_ids.append(id_str)
+        else:
+            invalid_ids.append(id_str)
+
+        # 统计 uid 分布
+        uid = meta.get("uid")
+        if uid is not None:
+            uid_counts[uid] = uid_counts.get(uid, 0) + 1
+
+        # 检查 mysql_table 格式(应该是 bilibili_comment_{uid} 或 bilibili_danmu_{uid})
+        table = meta.get("mysql_table", "")
+        if table in ("bilibili_comment", "bilibili_danmu"):
+            table_issues.append(f"ID {id_str} 使用旧表名 {table}")
+
+    return {
+        "total": len(ids),
+        "valid": len(valid_ids),
+        "invalid": len(invalid_ids),
+        "invalid_ids": invalid_ids[:20],  # 只返回前 20 个避免输出过长
+        "uid_distribution": uid_counts,
+        "table_issues": table_issues[:10],  # 只返回前 10 个
+    }
+
+
+def get_all_uids():
+    """返回 Chroma 中所有 uid 的列表(去重)。"""
+    all_data = _get_all()
+    metas = all_data.get("metadatas") or []
+    uids = set()
+    for m in metas:
+        uid = m.get("uid")
+        if uid is not None:
+            uids.add(uid)
+    return sorted(uids)
+
+
+def cleanup_invalid_records():
+    """清理所有格式不正确的记录。返回删除的数量。"""
+    result = diagnose()
+    invalid_ids = result["invalid_ids"]
+    if not invalid_ids:
+        # 诊断只返回前 20 个,需要重新获取全部
+        all_data = _get_all()
+        invalid_ids = [id_str for id_str in all_data["ids"] if not _validate_id_format(id_str)]
+
+    if not invalid_ids:
+        return 0
+
+    return delete(invalid_ids)

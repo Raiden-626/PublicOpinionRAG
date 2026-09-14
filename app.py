@@ -228,12 +228,69 @@ def api_ask():
         return _json({"error": "请输入问题"}, 400)
     counts = _counts(uid)
     
-    # 诊断: 检查 Chroma 中是否有该 UID 的向量
+    # 检查 Chroma 中是否有该 UID 的向量,若无则自动补全
     import vector_store
+    from clients import embed as embed_fn
+
     chroma_count = vector_store.count_by_uid(uid)
+    auto_fill_error = None
     if chroma_count == 0:
+        # 尝试自动补全向量
+        try:
+            auto_fill_result = []
+            for kind in ("comment", "danmu"):
+                table = db.table_for(kind, uid)
+                existing_ids = vector_store.get_mysql_ids(
+                    where={"$and": [{"uid": uid}, {"mysql_table": table}]}
+                )
+                missing_ids = db.fetch_ids_without_vector(kind, uid, existing_ids)
+                if not missing_ids:
+                    continue
+                rows = db.fetch_rows_by_ids(kind, uid, missing_ids[:200])
+                texts = [r["content"] for r in rows]
+                # 向量化带重试(最多 3 次)
+                vecs = None
+                for attempt in range(3):
+                    try:
+                        vecs = embed_fn(texts)
+                        break
+                    except Exception as e:
+                        if attempt < 2:
+                            print(f"[auto-fill] {kind} 向量化失败,重试中: {e}")
+                            time.sleep(3)
+                        else:
+                            raise
+                if vecs is None:
+                    continue
+                ids, metas, docs = [], [], []
+                for row, vec in zip(rows, vecs):
+                    ids.append(f"{kind}_{uid}_{row['id']}")
+                    metas.append({
+                        "uid": uid,
+                        "type": table,
+                        "mysql_table": table,
+                        "mysql_id": row["id"],
+                        "oid": row.get("oid") or 0,
+                    })
+                    docs.append(row["content"])
+                vector_store.add(ids=ids, embeddings=vecs, documents=docs, metadatas=metas)
+                auto_fill_result.append(f"{kind}: {len(rows)}条")
+            if auto_fill_result:
+                print(f"[auto-fill] uid={uid} 补全完成: {'; '.join(auto_fill_result)}")
+            # 重新检查
+            chroma_count = vector_store.count_by_uid(uid)
+        except Exception as e:
+            auto_fill_error = str(e)
+            print(f"[auto-fill] uid={uid} 失败: {e}")
+
+    if chroma_count == 0:
+        err_msg = f"Chroma 向量库中没有 UID={uid} 的数据。MySQL 中有评论 {counts.get('comment', 0)} 条、弹幕 {counts.get('danmu', 0)} 条。"
+        if auto_fill_error:
+            err_msg += f" 自动补全失败: {auto_fill_error}"
+        else:
+            err_msg += " 自动补全未能写入向量,请检查 embedding API 配置。"
         return _json({
-            "error": f"Chroma 向量库中没有 UID={uid} 的数据(共 {chroma_count} 条向量)。MySQL 中有评论 {counts.get('comment', 0)} 条、弹幕 {counts.get('danmu', 0)} 条。请重新执行'抓取并入库'，或点击'补全向量'按钮。",
+            "error": err_msg,
             "mysql_counts": counts,
             "chroma_vectors": chroma_count,
         }, 400)

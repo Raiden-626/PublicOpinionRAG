@@ -20,12 +20,6 @@ def retrieve(question, uid, top_k=TOP_K):
     """对指定 uid 的语料做语义检索。返回 list[dict],按相似度升序。"""
     qvec = embed(question)
     hits = vector_store.query_by_uid(qvec, uid, top_k=top_k)
-    
-    # 调试: 打印检索结果数量
-    print(f"[DEBUG] retrieve: uid={uid}, question='{question[:30]}...', hits={len(hits)}")
-    if hits:
-        print(f"[DEBUG]   第一条: id={hits[0]['id']}, distance={hits[0]['distance']:.4f}")
-        print(f"[DEBUG]   metadata: {hits[0]['metadata']}")
 
     # 按 mysql_table 分组,批量回查原文
     by_table = {}

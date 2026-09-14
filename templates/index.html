@@ -639,14 +639,13 @@
       <label>UID</label>
       <input id="uid" type="text" inputmode="numeric" placeholder="请输入 UID" autocomplete="off" />
       <button class="sm-btn" id="statusBtn">查询数据</button>
-      <button class="sm-btn" id="reEmbedBtn" title="补全 MySQL 中有但 Chroma 中缺失的向量">补全向量</button>
       <span class="status" id="status"></span>
     </div>
 
     <!-- RAG 问答栏 -->
     <div class="q-bar">
       <label>RAG 问答</label>
-      <input id="question" type="text" placeholder="输入问题,如: 这个用户最近在吐槽什么?" autocomplete="off" />
+      <input id="question" type="text" placeholder="该用户最近在关注什么？" autocomplete="off" />
       <button class="card primary" id="btnAsk" style="padding:8px 16px" disabled>提问</button>
     </div>
 
@@ -880,24 +879,6 @@
         updateButtons();
         ssSave();
         $("status").innerHTML = '已有 <b><span class="chip cm">评论 ' + c.comment + '</span><span class="chip dm">弹幕 ' + c.danmu + '</span></b>';
-      } catch (e) {
-        $("status").innerHTML = '<span class="err">' + escapeHtml(e.message) + '</span>';
-      }
-    };
-
-    // ---- 补全向量 ----
-    $("reEmbedBtn").onclick = async () => {
-      const uid = uidVal();
-      if (!/^\d+$/.test(uid)) { alert("请先输入数字 UID"); return; }
-      $("status").innerHTML = '<span class="loading"><span class="spin"></span>正在扫描并补全缺失向量…</span>';
-      try {
-        const r = await fetch("/api/re_embed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uid }) });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error);
-        const c = j.comment || {}, d = j.danmu || {};
-        let msg = '补全: 评论 ' + (c.embedded || 0) + '/' + (c.missing || 0) + ' · 弹幕 ' + (d.embedded || 0) + '/' + (d.missing || 0);
-        if (j.debug) msg += ' | ' + j.debug;
-        $("status").innerHTML = msg;
       } catch (e) {
         $("status").innerHTML = '<span class="err">' + escapeHtml(e.message) + '</span>';
       }

@@ -342,17 +342,25 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True):
             rows = fetch_rows_by_ids(kind, uid, all_ids)
             new_rows = [(r["id"], r) for r in rows]
 
-        # 批量向量化
+        # 批量向量化(带重试,最多 2 次)
         texts = [r[1]["content"] for r in new_rows]
-        try:
-            vecs = embed(texts)
-        except Exception as e:
-            print(f"[{kind}] 向量化失败:{e}（数据已入 MySQL,可稍后补向量）")
+        vecs = None
+        for attempt in range(3):
+            try:
+                vecs = embed(texts)
+                break
+            except Exception as e:
+                if attempt < 2:
+                    print(f"[{kind}] 向量化第{attempt+1}次失败:{e},3 秒后重试…")
+                    time.sleep(3)
+                else:
+                    print(f"[{kind}] 向量化最终失败:{e}（数据已入 MySQL,可稍后补向量）")
+        if vecs is None:
             continue
 
         ids, metas, docs = [], [], []
         for (mysql_id, rec), vec in zip(new_rows, vecs):
-            ids.append(f"{kind}_{mysql_id}")
+            ids.append(f"{kind}_{uid}_{mysql_id}")
             metas.append({
                 "uid": int(uid),
                 "type": table,

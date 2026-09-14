@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# 项目根目录(config.py 所在目录)
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ---- SiliconFlow API ----
 API_KEY = os.getenv("KEY")
 API_BASE = os.getenv("BASE", "https://api.siliconflow.cn/v1")
@@ -22,7 +25,7 @@ MYSQL = {
 }
 
 # ---- Chroma(向量检索索引)----
-CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
+CHROMA_PATH = os.getenv("CHROMA_PATH", os.path.join(_BASE_DIR, "chroma_db"))
 COLLECTION = os.getenv("CHROMA_COLLECTION", "bilibili_comments")
 
 # ---- 检索参数 ----

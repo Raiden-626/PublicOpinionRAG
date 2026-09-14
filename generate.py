@@ -67,34 +67,6 @@ def _truncate_recent(lines, max_chars):
 
 # ---- 流式生成函数 ----
 
-def ask_stream(question, uid, top_k=None):
-    """对该 uid 的语料做 RAG 问答。生成器 yield str token。
-    调用方可在生成结束后读取 .sources 属性获取来源。
-    """
-    results = retrieve(question, uid, top_k=top_k or 8)
-    ctx = build_context(results)
-    if not ctx:
-        yield "该用户暂无可检索数据,请先抓取入库。"
-        return
-
-    user = (
-        f"用户问题:{question}\n\n"
-        f"参考片段(按相关度排序):\n{ctx}\n\n"
-        "请基于以上片段回答。"
-    )
-    for token in chat_stream([
-        {"role": "system", "content": SYSTEM_QA},
-        {"role": "user", "content": user},
-    ]):
-        yield token
-
-    # 将 sources 附在函数对象上(调用方在生成结束后读取)
-    ask_stream.sources = [
-        {"content": r["content"], "ctime": r["ctime"], "url": r["url"]}
-        for r in results
-    ]
-
-
 def recent_focus_stream(uid, sample_n=200):
     """功能2: 最近在关注的内容。生成器 yield str token。
 
