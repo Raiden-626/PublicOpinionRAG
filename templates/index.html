@@ -895,7 +895,9 @@
         const j = await r.json();
         if (!r.ok) throw new Error(j.error);
         const c = j.comment || {}, d = j.danmu || {};
-        $("status").innerHTML = '补全: 评论 ' + (c.embedded || 0) + '/' + (c.missing || 0) + ' · 弹幕 ' + (d.embedded || 0) + '/' + (d.missing || 0);
+        let msg = '补全: 评论 ' + (c.embedded || 0) + '/' + (c.missing || 0) + ' · 弹幕 ' + (d.embedded || 0) + '/' + (d.missing || 0);
+        if (j.debug) msg += ' | ' + j.debug;
+        $("status").innerHTML = msg;
       } catch (e) {
         $("status").innerHTML = '<span class="err">' + escapeHtml(e.message) + '</span>';
       }

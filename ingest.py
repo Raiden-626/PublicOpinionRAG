@@ -324,8 +324,23 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True):
         result["samples"][kind] = [_sample(r, kind) for r in records[:5]]
 
         if not new_rows:
-            print(f"[{kind}] 无新增行(全部已存在),跳过向量化")
-            continue
+            print(f"[{kind}] 无新增行(全部已存在),检查 Chroma 向量是否完整…")
+            # 检查 Chroma 中是否已有该 uid+kind 的向量
+            existing_mids = vector_store.get_mysql_ids(
+                where={"$and": [{"uid": uid}, {"mysql_table": table}]}
+            )
+            if existing_mids:
+                print(f"[{kind}] Chroma 已有 {len(existing_mids)} 条向量,跳过")
+                continue
+            # Chroma 中没有向量,需要补全(从 MySQL 取全部行做向量化)
+            from db import fetch_all_ids, fetch_rows_by_ids
+            all_ids = fetch_all_ids(kind, uid)
+            if not all_ids:
+                print(f"[{kind}] MySQL 中也无数据,跳过")
+                continue
+            print(f"[{kind}] Chroma 缺少向量,从 MySQL 补全 {len(all_ids)} 条…")
+            rows = fetch_rows_by_ids(kind, uid, all_ids)
+            new_rows = [(r["id"], r) for r in rows]
 
         # 批量向量化
         texts = [r[1]["content"] for r in new_rows]

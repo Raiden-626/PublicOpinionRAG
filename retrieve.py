@@ -19,7 +19,7 @@ def _kind_from_table(table_name):
 def retrieve(question, uid, top_k=TOP_K):
     """对指定 uid 的语料做语义检索。返回 list[dict],按相似度升序。"""
     qvec = embed(question)
-    hits = vector_store.query(qvec, top_k=top_k, where={"uid": int(uid)})
+    hits = vector_store.query_by_uid(qvec, uid, top_k=top_k)
     
     # 调试: 打印检索结果数量
     print(f"[DEBUG] retrieve: uid={uid}, question='{question[:30]}...', hits={len(hits)}")

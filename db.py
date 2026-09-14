@@ -223,6 +223,20 @@ def fetch_rows(kind, uid, ids):
 
 
 # ---- 向量化一致性辅助 ----
+def fetch_all_ids(kind, uid):
+    """返回 MySQL 中某 uid 表的全部主键 id 列表。"""
+    tbl = table_for(kind, uid)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT id FROM `{tbl}`", ())
+            return [row[0] for row in cur.fetchall()]
+    except pymysql.err.ProgrammingError:
+        return []
+    finally:
+        conn.close()
+
+
 def fetch_ids_without_vector(kind, uid, vector_ids_set):
     """找出 MySQL 中有但 Chroma 中没有对应向量的行 id 列表。
     vector_ids_set: Chroma 中已有的 mysql_id 集合。

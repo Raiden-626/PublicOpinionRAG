@@ -13,6 +13,7 @@
   .venv\\Scripts\\python.exe app.py
   浏览器打开 http://127.0.0.1:5000/
 """
+
 import json
 import os
 import threading
@@ -117,6 +118,7 @@ def _parse_uid(body):
 
 # ---- 非流式端点 ----
 
+
 @app.route("/api/status")
 def api_status():
     uid = (request.args.get("uid") or "").strip()
@@ -124,14 +126,14 @@ def api_status():
         return _json({"error": "uid 必须为数字"}, 400)
     uid = int(uid)
     counts = _counts(uid)
-    
-    # 添加 Chroma 向量数量(调试用)
+
+    # Chroma 向量数量
     import vector_store
     chroma_counts = {
         "comment": vector_store.count_by_uid(uid, kind="comment"),
         "danmu": vector_store.count_by_uid(uid, kind="danmu"),
     }
-    
+
     return _json({"uid": uid, "counts": counts, "chroma_vectors": chroma_counts})
 
 
@@ -150,6 +152,7 @@ def api_ingest():
 
 
 # ---- 后台任务端点(刷新不丢失) ----
+
 
 def _start_or_reconnect(task_key, gen_func, args, counts, extra_capture=None):
     """查找已有任务或创建新任务。返回 (task_key, entry)。"""
@@ -184,9 +187,17 @@ def api_focus():
         return err
     counts = _counts(uid)
     task_key = f"focus_{uid}"
-    _, entry = _start_or_reconnect(task_key, generate.recent_focus_stream, (uid,), counts)
-    return _json({"task_id": task_key, "counts": counts,
-                    "status": entry["status"], "text": entry["text"]})
+    _, entry = _start_or_reconnect(
+        task_key, generate.recent_focus_stream, (uid,), counts
+    )
+    return _json(
+        {
+            "task_id": task_key,
+            "counts": counts,
+            "status": entry["status"],
+            "text": entry["text"],
+        }
+    )
 
 
 @app.route("/api/report", methods=["POST"])
@@ -197,8 +208,14 @@ def api_report():
     counts = _counts(uid)
     task_key = f"report_{uid}"
     _, entry = _start_or_reconnect(task_key, generate.report_stream, (uid,), counts)
-    return _json({"task_id": task_key, "counts": counts,
-                    "status": entry["status"], "text": entry["text"]})
+    return _json(
+        {
+            "task_id": task_key,
+            "counts": counts,
+            "status": entry["status"],
+            "text": entry["text"],
+        }
+    )
 
 
 @app.route("/api/ask", methods=["POST"])
@@ -210,19 +227,38 @@ def api_ask():
     if not question:
         return _json({"error": "请输入问题"}, 400)
     counts = _counts(uid)
+    
+    # 诊断: 检查 Chroma 中是否有该 UID 的向量
+    import vector_store
+    chroma_count = vector_store.count_by_uid(uid)
+    if chroma_count == 0:
+        return _json({
+            "error": f"Chroma 向量库中没有 UID={uid} 的数据(共 {chroma_count} 条向量)。MySQL 中有评论 {counts.get('comment', 0)} 条、弹幕 {counts.get('danmu', 0)} 条。请重新执行'抓取并入库'，或点击'补全向量'按钮。",
+            "mysql_counts": counts,
+            "chroma_vectors": chroma_count,
+        }, 400)
+    
     task_key = f"ask_{uid}_{question}"
     _, entry = _start_or_reconnect(
-        task_key, generate.ask_stream, (question, uid), counts,
+        task_key,
+        generate.ask_stream,
+        (question, uid),
+        counts,
         extra_capture=["sources"],
     )
-    resp = {"task_id": task_key, "counts": counts,
-            "status": entry["status"], "text": entry["text"]}
+    resp = {
+        "task_id": task_key,
+        "counts": counts,
+        "status": entry["status"],
+        "text": entry["text"],
+    }
     if entry.get("extra"):
         resp.update(entry["extra"])
     return _json(resp)
 
 
 # ---- 向量补全 ----
+
 
 @app.route("/api/re_embed", methods=["POST"])
 def api_re_embed():
@@ -231,49 +267,70 @@ def api_re_embed():
     if err:
         return err
 
-    import vector_store
-    from clients import embed
+    try:
+        import vector_store
+        from clients import embed
 
-    results = {}
-    for kind in ("comment", "danmu"):
-        table = db.table_for(kind, uid)
-        # 用 Chroma get() 按 metadata 查已有的 mysql_id,无需浪费 embedding 调用
-        existing_ids = vector_store.get_mysql_ids(where={"uid": uid, "mysql_table": table})
+        results = {}
+        debug_info = []
+        
+        for kind in ("comment", "danmu"):
+            table = db.table_for(kind, uid)
+            # 用 Chroma get() 按 metadata 查已有的 mysql_id,无需浪费 embedding 调用
+            existing_ids = vector_store.get_mysql_ids(
+                where={"$and": [{"uid": uid}, {"mysql_table": table}]}
+            )
+            debug_info.append(f"{kind}: Chroma已有{len(existing_ids)}条")
 
-        # 找 MySQL 中缺失的行
-        missing_ids = db.fetch_ids_without_vector(kind, uid, existing_ids)
-        if not missing_ids:
-            results[kind] = {"missing": 0, "embedded": 0}
-            continue
+            # 找 MySQL 中缺失的行
+            missing_ids = db.fetch_ids_without_vector(kind, uid, existing_ids)
+            debug_info.append(f"{kind}: MySQL中需补{len(missing_ids)}条")
+            
+            if not missing_ids:
+                results[kind] = {"missing": 0, "embedded": 0}
+                continue
 
-        rows = db.fetch_rows_by_ids(kind, uid, missing_ids[:200])  # 每次最多补 200 条
-        texts = [r["content"] for r in rows]
-        try:
-            vecs = embed(texts)
-        except Exception as e:
-            results[kind] = {"missing": len(missing_ids), "embedded": 0, "error": str(e)}
-            continue
+            rows = db.fetch_rows_by_ids(kind, uid, missing_ids[:200])  # 每次最多补 200 条
+            texts = [r["content"] for r in rows]
+            try:
+                vecs = embed(texts)
+                debug_info.append(f"{kind}: 向量化成功{len(vecs)}条")
+            except Exception as e:
+                results[kind] = {
+                    "missing": len(missing_ids),
+                    "embedded": 0,
+                    "error": str(e),
+                }
+                debug_info.append(f"{kind}: 向量化失败-{e}")
+                continue
 
-        ids, metas, docs = [], [], []
-        for row, vec in zip(rows, vecs):
-            ids.append(f"{kind}_{row['id']}")
-            metas.append({
-                "uid": uid,
-                "type": table,
-                "mysql_table": table,
-                "mysql_id": row["id"],
-                "oid": row.get("oid") or 0,
-            })
-            docs.append(row["content"])
-        vector_store.add(ids=ids, embeddings=vecs, documents=docs, metadatas=metas)
-        results[kind] = {"missing": len(missing_ids), "embedded": len(rows)}
+            ids, metas, docs = [], [], []
+            for row, vec in zip(rows, vecs):
+                ids.append(f"{kind}_{row['id']}")
+                metas.append(
+                    {
+                        "uid": uid,
+                        "type": table,
+                        "mysql_table": table,
+                        "mysql_id": row["id"],
+                        "oid": row.get("oid") or 0,
+                    }
+                )
+                docs.append(row["content"])
+            vector_store.add(ids=ids, embeddings=vecs, documents=docs, metadatas=metas)
+            results[kind] = {"missing": len(missing_ids), "embedded": len(rows)}
+            debug_info.append(f"{kind}: 已写入Chroma{len(rows)}条")
 
-    results["uid"] = uid
-    results["counts"] = _counts(uid)
-    return _json(results)
+        results["uid"] = uid
+        results["counts"] = _counts(uid)
+        results["debug"] = "; ".join(debug_info)
+        return _json(results)
+    except Exception as e:
+        return _json({"error": f"补全向量失败: {str(e)}"}, 500)
 
 
 # ---- 历史记录管理 ----
+
 
 @app.route("/api/history")
 def api_history_list():
@@ -324,5 +381,9 @@ def api_history_delete(record_id):
 
 
 if __name__ == "__main__":
+    import webbrowser
+
+    # 延迟 1.5 秒打开浏览器,等 Flask 启动就绪
+    threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:5000/")).start()
     # threaded=True: 抓取耗时1-2分钟,长请求不阻塞其他请求
     app.run(host="127.0.0.1", port=5000, threaded=True, debug=False)
