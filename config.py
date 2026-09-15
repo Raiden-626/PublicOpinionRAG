@@ -1,4 +1,5 @@
 """配置加载: 从 .env 读取 SiliconFlow / MySQL / Chroma 配置。"""
+
 import os
 from dotenv import load_dotenv
 

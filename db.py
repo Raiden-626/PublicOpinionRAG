@@ -284,18 +284,36 @@ if __name__ == "__main__":
 # ---- 历史记录 CRUD ----
 
 def save_history(uid, kind, content, title=None):
-    """保存生成记录到历史表。kind: 'focus'/'report'/'ask'。返回新记录 id。"""
+    """保存生成记录到历史表。kind: 'focus'/'report'/'ask'。
+    每个 uid+kind 只保留一份最新记录,新生成会覆盖旧的。返回记录 id。
+    """
     tbl = history_table(uid)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            # 先查找是否已有该 uid+kind 的记录
             cur.execute(
-                f"INSERT INTO `{tbl}` (uid, kind, title, content) VALUES (%s, %s, %s, %s)",
-                (uid, kind, title, content),
+                f"SELECT id FROM `{tbl}` WHERE uid=%s AND kind=%s",
+                (uid, kind),
             )
-            new_id = cur.lastrowid
+            existing = cur.fetchone()
+
+            if existing:
+                # 已有记录,更新内容
+                record_id = existing[0]
+                cur.execute(
+                    f"UPDATE `{tbl}` SET title=%s, content=%s, created_at=NOW() WHERE id=%s",
+                    (title, content, record_id),
+                )
+            else:
+                # 无记录,插入新记录
+                cur.execute(
+                    f"INSERT INTO `{tbl}` (uid, kind, title, content) VALUES (%s, %s, %s, %s)",
+                    (uid, kind, title, content),
+                )
+                record_id = cur.lastrowid
         conn.commit()
-        return new_id
+        return record_id
     finally:
         conn.close()
 
@@ -350,5 +368,22 @@ def delete_history(uid, record_id):
             affected = cur.rowcount
         conn.commit()
         return affected > 0
+    finally:
+        conn.close()
+
+
+def get_latest_history(uid, kind):
+    """获取该 uid+kind 的最新(唯一)记录。返回 dict 或 None。"""
+    tbl = history_table(uid)
+    conn = get_conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                f"SELECT * FROM `{tbl}` WHERE uid=%s AND kind=%s",
+                (uid, kind),
+            )
+            return cur.fetchone()
+    except pymysql.err.ProgrammingError:
+        return None
     finally:
         conn.close()

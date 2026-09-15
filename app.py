@@ -129,6 +129,7 @@ def api_status():
 
     # Chroma 向量数量
     import vector_store
+
     chroma_counts = {
         "comment": vector_store.count_by_uid(uid, kind="comment"),
         "danmu": vector_store.count_by_uid(uid, kind="danmu"),
@@ -227,7 +228,7 @@ def api_ask():
     if not question:
         return _json({"error": "请输入问题"}, 400)
     counts = _counts(uid)
-    
+
     # 检查 Chroma 中是否有该 UID 的向量,若无则自动补全
     import vector_store
     from clients import embed as embed_fn
@@ -265,15 +266,19 @@ def api_ask():
                 ids, metas, docs = [], [], []
                 for row, vec in zip(rows, vecs):
                     ids.append(f"{kind}_{uid}_{row['id']}")
-                    metas.append({
-                        "uid": uid,
-                        "type": table,
-                        "mysql_table": table,
-                        "mysql_id": row["id"],
-                        "oid": row.get("oid") or 0,
-                    })
+                    metas.append(
+                        {
+                            "uid": uid,
+                            "type": table,
+                            "mysql_table": table,
+                            "mysql_id": row["id"],
+                            "oid": row.get("oid") or 0,
+                        }
+                    )
                     docs.append(row["content"])
-                vector_store.add(ids=ids, embeddings=vecs, documents=docs, metadatas=metas)
+                vector_store.add(
+                    ids=ids, embeddings=vecs, documents=docs, metadatas=metas
+                )
                 auto_fill_result.append(f"{kind}: {len(rows)}条")
             if auto_fill_result:
                 print(f"[auto-fill] uid={uid} 补全完成: {'; '.join(auto_fill_result)}")
@@ -289,12 +294,15 @@ def api_ask():
             err_msg += f" 自动补全失败: {auto_fill_error}"
         else:
             err_msg += " 自动补全未能写入向量,请检查 embedding API 配置。"
-        return _json({
-            "error": err_msg,
-            "mysql_counts": counts,
-            "chroma_vectors": chroma_count,
-        }, 400)
-    
+        return _json(
+            {
+                "error": err_msg,
+                "mysql_counts": counts,
+                "chroma_vectors": chroma_count,
+            },
+            400,
+        )
+
     task_key = f"ask_{uid}_{question}"
     _, entry = _start_or_reconnect(
         task_key,
@@ -330,7 +338,7 @@ def api_re_embed():
 
         results = {}
         debug_info = []
-        
+
         for kind in ("comment", "danmu"):
             table = db.table_for(kind, uid)
             # 用 Chroma get() 按 metadata 查已有的 mysql_id,无需浪费 embedding 调用
@@ -342,12 +350,14 @@ def api_re_embed():
             # 找 MySQL 中缺失的行
             missing_ids = db.fetch_ids_without_vector(kind, uid, existing_ids)
             debug_info.append(f"{kind}: MySQL中需补{len(missing_ids)}条")
-            
+
             if not missing_ids:
                 results[kind] = {"missing": 0, "embedded": 0}
                 continue
 
-            rows = db.fetch_rows_by_ids(kind, uid, missing_ids[:200])  # 每次最多补 200 条
+            rows = db.fetch_rows_by_ids(
+                kind, uid, missing_ids[:200]
+            )  # 每次最多补 200 条
             texts = [r["content"] for r in rows]
             try:
                 vecs = embed(texts)
