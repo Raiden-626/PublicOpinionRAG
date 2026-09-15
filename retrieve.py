@@ -54,12 +54,14 @@ def retrieve(question, uid, top_k=TOP_K):
 
 
 def build_context(results, max_chars=6000):
-    """拼成给 LLM 的上下文字符串,带序号与时间。"""
+    """拼成给 LLM 的上下文字符串,带序号。
+    文档已包含日期前缀(如 "[2025-01-15] 内容"),直接使用。
+    """
     parts, total = [], 0
     for i, r in enumerate(results, 1):
         kind = "评论" if "comment" in (r.get("type") or "") else "弹幕"
-        ctime = r["ctime"].strftime("%Y-%m-%d") if r.get("ctime") else "未知时间"
-        block = f"[{i}] {kind} · {ctime}\n{r['content']}"
+        # 文档已包含日期前缀,直接使用
+        block = f"[{i}] {kind}: {r['content']}"
         if total + len(block) > max_chars:
             break
         parts.append(block)

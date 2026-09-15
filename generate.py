@@ -5,16 +5,18 @@
 - recent_focus_stream(): 功能2 — 该用户最近在关注的内容
 - report_stream():    功能3 — 舆情分析报告
 """
+
 import db
 from retrieve import retrieve, build_context
 from clients import chat_stream
-
 
 SYSTEM_QA = (
     "你是B站用户舆情分析助手。仅基于给定评论/弹幕片段回答,不要编造。"
     "引用片段时用 [序号]。若片段不足以回答,直接说明。"
 )
-SYSTEM_ANALYST = "你是专业的B站用户行为与舆情分析师。严格基于给定数据客观分析,不编造未提供的内容。"
+SYSTEM_ANALYST = (
+    "你是专业的B站用户行为与舆情分析师。严格基于给定数据客观分析,不编造未提供的内容。"
+)
 
 
 def _fmt_rows(rows, label):
@@ -30,9 +32,10 @@ def _dedup_rows(lines, threshold=0.55):
     """去除近似重复的行(基于字符 bigram Jaccard 相似度)。
     保留首次出现的版本,维持原始顺序。
     """
+
     def bigrams(s):
         s = s.strip()
-        return set(s[i:i+2] for i in range(len(s)-1)) if len(s) > 1 else {s}
+        return set(s[i : i + 2] for i in range(len(s) - 1)) if len(s) > 1 else {s}
 
     kept = []
     kept_bg = []
@@ -67,6 +70,7 @@ def _truncate_recent(lines, max_chars):
 
 # ---- 流式生成函数 ----
 
+
 def recent_focus_stream(uid, sample_n=200):
     """功能2: 最近在关注的内容。生成器 yield str token。
 
@@ -96,10 +100,14 @@ def recent_focus_stream(uid, sample_n=200):
 
     # 累积文本并在生成完成后保存历史记录
     full_text = []
-    for token in chat_stream([
-        {"role": "system", "content": SYSTEM_ANALYST},
-        {"role": "user", "content": user},
-    ], temperature=0.4, max_tokens=1200):
+    for token in chat_stream(
+        [
+            {"role": "system", "content": SYSTEM_ANALYST},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.4,
+        max_tokens=2300,
+    ):
         full_text.append(token)
         yield token
 
@@ -147,10 +155,14 @@ def report_stream(uid, sample_n=400):
 
     # 累积文本并在生成完成后保存历史记录
     full_text = []
-    for token in chat_stream([
-        {"role": "system", "content": SYSTEM_ANALYST},
-        {"role": "user", "content": user},
-    ], temperature=0.4, max_tokens=1400):
+    for token in chat_stream(
+        [
+            {"role": "system", "content": SYSTEM_ANALYST},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.4,
+        max_tokens=2300,
+    ):
         full_text.append(token)
         yield token
 
@@ -163,6 +175,7 @@ def report_stream(uid, sample_n=400):
 
 
 # ---- RAG 问答 ----
+
 
 def ask_stream(question, uid, top_k=None):
     """对该 uid 的语料做 RAG 问答。生成器 yield str token。
@@ -182,17 +195,18 @@ def ask_stream(question, uid, top_k=None):
 
     # 累积文本并在生成完成后保存历史记录
     full_text = []
-    for token in chat_stream([
-        {"role": "system", "content": SYSTEM_QA},
-        {"role": "user", "content": user},
-    ]):
+    for token in chat_stream(
+        [
+            {"role": "system", "content": SYSTEM_QA},
+            {"role": "user", "content": user},
+        ]
+    ):
         full_text.append(token)
         yield token
 
     # 将 sources 附在函数对象上(调用方在生成结束后读取)
     ask_stream.sources = [
-        {"content": r["content"], "ctime": r["ctime"], "url": r["url"]}
-        for r in results
+        {"content": r["content"], "ctime": r["ctime"], "url": r["url"]} for r in results
     ]
 
     # 生成完成,保存到历史表

@@ -22,6 +22,7 @@ def main():
                        help="抓取类型,逗号分隔: comment,danmu")
     p_ing.add_argument("--pages", type=int, default=0, help="最大翻页数,0=全部")
     p_ing.add_argument("--headful", action="store_true", help="有头浏览器(无头被拦时用)")
+    p_ing.add_argument("--overwrite", action="store_true", help="覆盖模式:清空旧数据后重新入库")
 
     p_ask = sub.add_parser("ask", help="对该 uid 问答")
     p_ask.add_argument("uid", type=int)
@@ -47,6 +48,7 @@ def main():
             args.uid, kinds=kinds,
             max_pages=args.pages or None,
             headless=not args.headful,
+            overwrite=args.overwrite,
         )
 
     elif args.cmd == "ask":

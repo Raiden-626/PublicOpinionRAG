@@ -293,11 +293,12 @@ def _sample(rec, kind):
     return d
 
 
-def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True):
+def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, overwrite=False):
     """抓取 + 入 MySQL + 入 Chroma。
 
     - MySQL: 按 rpid/dmid 去重(INSERT IGNORE),返回新分配 id
     - Chroma: 仅对新增行做向量化入库(metadata 携 mysql_table/mysql_id/uid)
+    - overwrite=True 时,先清空该 UID 的旧数据再入库(完全覆盖)
     返回 dict: {fetched:{comment,danmu}, inserted:{comment,danmu}, samples:{comment,danmu}}
     """
     import db
@@ -305,6 +306,14 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True):
     from clients import embed
 
     db.ensure_tables(uid)
+
+    # 覆盖模式:先清空旧数据
+    if overwrite:
+        print(f"[overwrite] 清空 uid={uid} 的旧数据...")
+        mysql_deleted = db.clear_uid_data(uid, kinds=kinds)
+        chroma_deleted = vector_store.clear_by_uid(uid)
+        print(f"[overwrite] MySQL 删除 {mysql_deleted} 行, Chroma 删除 {chroma_deleted} 条向量")
+
     data = scrape_uid(uid, kinds=kinds, headless=headless)
 
     result = {"fetched": {}, "inserted": {}, "samples": {}}
@@ -368,7 +377,9 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True):
                 "mysql_id": int(mysql_id),
                 "oid": rec.get("oid") or 0,
             })
-            docs.append(rec["content"])
+            # 嵌入文本包含日期,帮助时间相关查询匹配
+            ctime_str = rec["ctime"].strftime("%Y-%m-%d") if rec.get("ctime") else "未知时间"
+            docs.append(f"[{ctime_str}] {rec['content']}")
         vector_store.add(ids=ids, embeddings=vecs, documents=docs, metadatas=metas)
         print(f"[{kind}] 新增 {len(new_rows)} 条入库(MySQL + Chroma)")
     return result
@@ -382,9 +393,10 @@ if __name__ == "__main__":
     ap.add_argument("--kinds", default="comment,danmu")
     ap.add_argument("--headful", action="store_true")
     ap.add_argument("--no-ingest", action="store_true", help="只抓取落 JSON,不入库")
+    ap.add_argument("--overwrite", action="store_true", help="覆盖模式:清空旧数据后重新入库")
     args = ap.parse_args()
     kinds = tuple(k.strip() for k in args.kinds.split(",") if k.strip())
     if args.no_ingest:
         scrape_uid(args.uid, kinds=kinds, headless=not args.headful)
     else:
-        ingest_uid(args.uid, kinds=kinds, headless=not args.headful)
+        ingest_uid(args.uid, kinds=kinds, headless=not args.headful, overwrite=args.overwrite)

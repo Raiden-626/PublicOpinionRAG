@@ -245,3 +245,18 @@ def cleanup_invalid_records():
         return 0
 
     return delete(invalid_ids)
+
+
+def clear_by_uid(uid):
+    """删除指定 uid 的全部向量。返回删除的数量。
+    用于覆盖模式:先清空再重新入库。
+    """
+    all_data = _get_all()
+    all_metas = all_data.get("metadatas") or []
+    indices = _filter_by_uid(all_metas, uid)
+
+    if not indices:
+        return 0
+
+    ids_to_delete = [all_data["ids"][i] for i in indices]
+    return delete(ids_to_delete)

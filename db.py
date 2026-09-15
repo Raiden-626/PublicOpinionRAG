@@ -372,6 +372,30 @@ def delete_history(uid, record_id):
         conn.close()
 
 
+def clear_uid_data(uid, kinds=("comment", "danmu")):
+    """清空指定 uid 的评论和弹幕数据。返回删除的行数。
+    用于覆盖模式:先清空再重新入库。
+    """
+    conn = get_conn()
+    total_deleted = 0
+    try:
+        with conn.cursor() as cur:
+            for kind in kinds:
+                tbl = table_for(kind, uid)
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM `{tbl}`", ())
+                    count = cur.fetchone()[0]
+                    cur.execute(f"DELETE FROM `{tbl}`", ())
+                    conn.commit()
+                    total_deleted += count
+                    print(f"[clear] {tbl}: 删除 {count} 行")
+                except pymysql.err.ProgrammingError:
+                    pass  # 表不存在,跳过
+        return total_deleted
+    finally:
+        conn.close()
+
+
 def get_latest_history(uid, kind):
     """获取该 uid+kind 的最新(唯一)记录。返回 dict 或 None。"""
     tbl = history_table(uid)

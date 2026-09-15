@@ -140,11 +140,13 @@ def api_status():
 
 @app.route("/api/ingest", methods=["POST"])
 def api_ingest():
-    uid, err = _parse_uid(request.json)
+    data = request.json or {}
+    uid, err = _parse_uid(data)
     if err:
         return err
+    overwrite = data.get("overwrite", False)
     try:
-        res = ingest.ingest_uid(uid, headless=False)
+        res = ingest.ingest_uid(uid, headless=False, overwrite=overwrite)
     except Exception as e:
         return _json({"error": f"抓取失败: {e}"}, 500)
     res["uid"] = uid
@@ -275,7 +277,9 @@ def api_ask():
                             "oid": row.get("oid") or 0,
                         }
                     )
-                    docs.append(row["content"])
+                    # 嵌入文本包含日期,帮助时间相关查询匹配
+                    ctime_str = row["ctime"].strftime("%Y-%m-%d") if row.get("ctime") else "未知时间"
+                    docs.append(f"[{ctime_str}] {row['content']}")
                 vector_store.add(
                     ids=ids, embeddings=vecs, documents=docs, metadatas=metas
                 )
