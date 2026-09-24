@@ -613,6 +613,10 @@
         flex: 1 1 120px
       }
 
+      #interactBar input {
+        flex: 1 1 80px !important
+      }
+
       .cnt-grid {
         gap: 10px
       }
@@ -676,6 +680,11 @@
         <div class="t">刷新历史记录</div>
         <div class="d">查看该 UID 的生成历史(关注/报告/问答)</div>
       </button>
+      <button class="card" id="btnInteract">
+        <div class="num">功能 5</div>
+        <div class="t">用户互动分析</div>
+        <div class="d">输入两个 UID,查看评论/回复互动记录</div>
+      </button>
     </div>
 
     <!-- 结果面板 -->
@@ -721,6 +730,28 @@
         <div style="text-align:center;color:#999;padding:20px">输入 UID 后点击"刷新历史"查看</div>
       </div>
     </div>
+
+    <!-- 互动分析栏 -->
+    <div class="q-bar" id="interactBar" style="display:none">
+      <label>互动分析</label>
+      <span style="font-size:13px;color:var(--muted)">UID A</span>
+      <input id="uidA" type="text" inputmode="numeric" placeholder="UID A" style="flex:0 0 120px" />
+      <span style="font-size:13px;color:var(--muted)">UID B</span>
+      <input id="uidB" type="text" inputmode="numeric" placeholder="UID B" style="flex:0 0 120px" />
+      <button class="sm-btn" id="btnInteractGo"
+        style="background:var(--brand);color:#fff;border-color:var(--brand)">查询互动</button>
+    </div>
+
+    <!-- 互动分析结果面板 -->
+    <div class="panel" id="pInteract">
+      <div class="panel-hd" onclick="togglePanel('pInteract')">
+        <h3>功能 5 · 用户互动分析 <span class="meta" id="interactMeta"></span></h3>
+        <span class="toggle" id="pInteract_toggle">▾</span>
+      </div>
+      <div class="panel-bd" id="interactBody">
+        <div style="text-align:center;color:#999;padding:20px">输入两个 UID 后点击"查询互动"</div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -752,7 +783,7 @@
     }
 
     // ---- 工具函数 ----
-    function showPanel(p) { $(p).classList.add("show"); }
+    function showPanel(p, scroll) { $(p).classList.add("show"); if (scroll) setTimeout(() => $(p).scrollIntoView({ behavior: "smooth", block: "start" }), 50); }
     function togglePanel(p) {
       const bd = $(p).querySelector(".panel-bd");
       const tg = $(p + "_toggle");
@@ -778,9 +809,9 @@
     }
 
     // ---- 后台任务轮询(刷新不丢失) ----
-    async function pollTask(panelId, metaId, bodyId, path, body, onDone) {
+    async function pollTask(panelId, metaId, bodyId, path, body, onDone, scroll) {
       const panel = $(panelId), meta = $(metaId), bd = $(bodyId);
-      showPanel(panelId);
+      showPanel(panelId, scroll);
       panel.querySelector(".panel-bd").style.display = "";
       panel.querySelector("#" + panelId + "_toggle")?.classList.remove("collapsed");
 
@@ -888,7 +919,7 @@
     $("btnIngest").onclick = async () => {
       const uid = uidVal();
       if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
-      showPanel("pIngest");
+      showPanel("pIngest", true);
       $("ingestBody").innerHTML = '<div class="loading"><span class="spin"></span>正在抓取,约 1-2 分钟(浏览器会自动打开抓取页面,请勿关闭)…</div>';
       let t0 = Date.now(), timer = setInterval(() => {
         $("ingestMeta").textContent = "已耗时 " + Math.round((Date.now() - t0) / 1000) + "s";
@@ -938,7 +969,7 @@
       pollTask("pFocus", "focusMeta", "focusBody", "/api/focus", { uid }, (ev) => {
         const c = ev.counts || {};
         $("focusMeta").textContent = '评论' + (c.comment || 0) + '/弹幕' + (c.danmu || 0);
-      });
+      }, true);
     };
 
     // ---- 功能3: 舆情报告(后台任务+轮询) ----
@@ -948,7 +979,7 @@
       pollTask("pReport", "reportMeta", "reportBody", "/api/report", { uid }, (ev) => {
         const c = ev.counts || {};
         $("reportMeta").textContent = '评论' + (c.comment || 0) + '/弹幕' + (c.danmu || 0);
-      });
+      }, true);
     };
 
     // ---- 功能4: RAG 问答(后台任务+轮询) ----
@@ -974,16 +1005,16 @@
           sh += '</div>';
           $("askBody").insertAdjacentHTML("beforeend", sh);
         }
-      });
+      }, true);
     }
     $("btnAsk").onclick = doAsk;
     $("question").addEventListener("keydown", e => { if (e.key === "Enter") doAsk(); });
 
     // ---- 历史记录功能 ----
-    async function loadHistory(kind) {
+    async function loadHistory(kind, scroll) {
       const uid = uidVal();
       if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
-      showPanel("pHistory");
+      showPanel("pHistory", scroll);
       const bd = $("historyBody");
       bd.innerHTML = '<div class="loading"><span class="spin"></span>加载中…</div>';
       try {
@@ -1035,7 +1066,7 @@
         const j = await r.json();
         if (!r.ok) throw new Error(j.error);
         const rec = j.record;
-        showPanel("pHistory");
+        showPanel("pHistory", true);
         const bd = $("historyBody");
         let h = '<div style="margin-bottom:12px">' +
           '<button onclick="loadHistory()">← 返回列表</button>' +
@@ -1066,10 +1097,129 @@
     }
 
     // 绑定历史按钮点击事件
-    $("btnHistory").onclick = () => loadHistory();
+    $("btnHistory").onclick = () => loadHistory(null, true);
+
+    // ---- 功能5: 用户互动分析 ----
+    $("btnInteract").onclick = () => {
+      const bar = $("interactBar");
+      bar.style.display = bar.style.display === "none" ? "flex" : "none";
+      if (bar.style.display === "flex") {
+        // 预填 UID A 为当前输入的 UID
+        const uid = uidVal();
+        if (/^\d+$/.test(uid) && !$("uidA").value) $("uidA").value = uid;
+        setTimeout(() => bar.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+        $("uidB").focus();
+      }
+    };
+
+    $("btnInteractGo").onclick = async () => {
+      const a = $("uidA").value.trim();
+      const b = $("uidB").value.trim();
+      if (!/^\d+$/.test(a) || !/^\d+$/.test(b)) {
+        alert("请输入两个数字 UID"); return;
+      }
+      if (a === b) { alert("两个 UID 不能相同"); return; }
+
+      showPanel("pInteract", true);
+      $("interactBody").style.display = "";
+      $("pInteract_toggle")?.classList.remove("collapsed");
+      $("interactBody").innerHTML = '<div class="loading"><span class="spin"></span>正在查询,可能调用B站API补充UP主信息…</div>';
+      $("interactMeta").textContent = "";
+
+      let t0 = Date.now();
+      let timer = setInterval(() => {
+        $("interactMeta").textContent = "已耗时 " + Math.round((Date.now() - t0) / 1000) + "s";
+      }, 1000);
+
+      try {
+        const r = await fetch("/api/interactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uid_a: a, uid_b: b }),
+        });
+        const j = await r.json();
+        clearInterval(timer);
+        if (!r.ok) throw new Error(j.error);
+        renderInteractions(j);
+      } catch (e) {
+        clearInterval(timer);
+        $("interactMeta").textContent = "";
+        $("interactBody").innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+      }
+    };
+
+    function renderInteractions(data) {
+      const s = data.summary;
+      const ua = data.uid_a, ub = data.uid_b;
+      $("interactMeta").textContent = "共 " + s.total + " 条互动";
+
+      let h = '';
+      // 摘要卡片
+      h += '<div class="cnt-grid">';
+      h += '<div class="b"><div class="n">' + s.total + '</div><div class="l">总互动数</div></div>';
+      h += '<div class="b"><div class="n">' + s.a_to_b_total + '</div><div class="l">UID ' + ua + ' → ' + ub + '</div></div>';
+      h += '<div class="b"><div class="n">' + s.b_to_a_total + '</div><div class="l">UID ' + ub + ' → ' + ua + '</div></div>';
+      h += '</div>';
+
+      if (data.resolved_owners > 0) {
+        h += '<div class="note">已实时查询B站API,补充了 ' + data.resolved_owners + ' 条视频的UP主信息</div>';
+      }
+
+      if (s.total === 0) {
+        h += '<div style="text-align:center;color:#999;padding:30px">未找到两个用户之间的互动记录。<br><span style="font-size:12px">提示: 需要先对两个 UID 分别执行"抓取并入库",互动分析才能查到数据。</span></div>';
+        $("interactBody").innerHTML = h;
+        return;
+      }
+
+      // A→B 互动
+      if (data.a_to_b.length) {
+        h += renderInteractionGroup("UID " + ua + " → UID " + ub, data.a_to_b, ua, ub);
+      }
+      // B→A 互动
+      if (data.b_to_a.length) {
+        h += renderInteractionGroup("UID " + ub + " → UID " + ua, data.b_to_a, ub, ua);
+      }
+
+      $("interactBody").innerHTML = h;
+    }
+
+    function renderInteractionGroup(title, records, commenterUid, targetUid) {
+      const onVideo = records.filter(r => r.type === "on_video");
+      const replies = records.filter(r => r.type === "reply");
+
+      let h = '<h3 style="margin-top:18px">' + title + ' <span class="tag cm">' + records.length + ' 条</span></h3>';
+
+      if (onVideo.length) {
+        h += '<h4 style="color:var(--muted);font-size:13px;margin:10px 0 6px">在对方视频下评论 (' + onVideo.length + ')</h4>';
+        h += '<table class="data"><tr><th>时间</th><th>内容</th><th>赞</th><th>链接</th></tr>';
+        for (const r of onVideo) {
+          h += '<tr><td style="white-space:nowrap">' + (r.ctime || "-") + '</td>' +
+            '<td class="c">' + escapeHtml(r.content) + '</td>' +
+            '<td>' + (r.like_count != null ? r.like_count : "-") + '</td>' +
+            '<td>' + (r.url ? '<a href="' + r.url + '" target="_blank">查看</a>' : "-") + '</td></tr>';
+        }
+        h += '</table>';
+      }
+
+      if (replies.length) {
+        h += '<h4 style="color:var(--muted);font-size:13px;margin:10px 0 6px">回复对方评论 (' + replies.length + ')</h4>';
+        h += '<table class="data"><tr><th>时间</th><th>内容</th><th>赞</th><th>链接</th></tr>';
+        for (const r of replies) {
+          h += '<tr><td style="white-space:nowrap">' + (r.ctime || "-") + '</td>' +
+            '<td class="c">' + escapeHtml(r.content) + '</td>' +
+            '<td>' + (r.like_count != null ? r.like_count : "-") + '</td>' +
+            '<td>' + (r.url ? '<a href="' + r.url + '" target="_blank">查看</a>' : "-") + '</td></tr>';
+        }
+        h += '</table>';
+      }
+
+      return h;
+    }
 
     // ---- 回车触发状态查询 ----
     $("uid").addEventListener("keydown", e => { if (e.key === "Enter") $("statusBtn").click(); });
+    $("uidA").addEventListener("keydown", e => { if (e.key === "Enter") $("btnInteractGo").click(); });
+    $("uidB").addEventListener("keydown", e => { if (e.key === "Enter") $("btnInteractGo").click(); });
 
     // ---- 页面加载恢复(刷新不丢失) ----
     (function restore() {

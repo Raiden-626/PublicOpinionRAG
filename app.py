@@ -400,6 +400,32 @@ def api_re_embed():
         return _json({"error": f"补全向量失败: {str(e)}"}, 500)
 
 
+# ---- 用户互动分析 ----
+
+
+@app.route("/api/interactions", methods=["POST"])
+def api_interactions():
+    """查询两个用户之间的互动记录。
+    请求体: {"uid_a": "123", "uid_b": "456"}
+    """
+    data = request.json or {}
+    uid_a_str = str(data.get("uid_a", "")).strip()
+    uid_b_str = str(data.get("uid_b", "")).strip()
+    if not uid_a_str.isdigit() or not uid_b_str.isdigit():
+        return _json({"error": "uid_a 和 uid_b 必须为数字"}, 400)
+    uid_a, uid_b = int(uid_a_str), int(uid_b_str)
+    if uid_a == uid_b:
+        return _json({"error": "两个 UID 不能相同"}, 400)
+
+    try:
+        import interactions
+        result = interactions.find_interactions(uid_a, uid_b, resolve_owners=True)
+        # datetime 不可直接 json 序列化,已在 interactions 中转为 str
+        return _json(result)
+    except Exception as e:
+        return _json({"error": f"查询失败: {e}"}, 500)
+
+
 # ---- 历史记录管理 ----
 
 

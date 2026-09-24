@@ -31,23 +31,27 @@ def history_table(uid):
 # ---- 建表 SQL 模板 ----
 _COMMENT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS `{table}` (
-  id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-  uid          BIGINT       NOT NULL COMMENT '被查询的B站用户uid',
-  oid          BIGINT       DEFAULT NULL COMMENT '视频oid',
-  bvid         VARCHAR(20)  DEFAULT NULL COMMENT '视频BV号(从链接解析)',
-  rpid         BIGINT       DEFAULT NULL COMMENT '评论rpid(去重键)',
-  root_id      BIGINT       DEFAULT NULL COMMENT '根评论id',
-  content      TEXT         NOT NULL COMMENT '评论正文',
-  ctime        DATETIME     DEFAULT NULL COMMENT '评论时间',
-  like_count   INT          DEFAULT NULL COMMENT '点赞数',
-  category     VARCHAR(50)  DEFAULT NULL COMMENT '分区/分类',
-  source       VARCHAR(50)  DEFAULT NULL COMMENT '数据来源,如 aicu.cc',
-  url          VARCHAR(500) DEFAULT NULL COMMENT '直达链接',
-  raw          JSON         DEFAULT NULL COMMENT '原始字段备份',
-  ingested_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+  uid             BIGINT       NOT NULL COMMENT '被查询的B站用户uid',
+  oid             BIGINT       DEFAULT NULL COMMENT '视频oid',
+  bvid            VARCHAR(20)  DEFAULT NULL COMMENT '视频BV号(从链接解析)',
+  rpid            BIGINT       DEFAULT NULL COMMENT '评论rpid(去重键)',
+  root_id         BIGINT       DEFAULT NULL COMMENT '根评论id',
+  content         TEXT         NOT NULL COMMENT '评论正文',
+  ctime           DATETIME     DEFAULT NULL COMMENT '评论时间',
+  like_count      INT          DEFAULT NULL COMMENT '点赞数',
+  category        VARCHAR(50)  DEFAULT NULL COMMENT '分区/分类',
+  source          VARCHAR(50)  DEFAULT NULL COMMENT '数据来源,如 aicu.cc',
+  url             VARCHAR(500) DEFAULT NULL COMMENT '直达链接',
+  video_owner_uid BIGINT       DEFAULT NULL COMMENT '视频UP主uid(从B站API获取)',
+  reply_to_uid    BIGINT       DEFAULT NULL COMMENT '回复目标用户uid(从评论卡解析)',
+  raw             JSON         DEFAULT NULL COMMENT '原始字段备份',
+  ingested_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_rpid (rpid),
   KEY idx_ctime (ctime),
-  KEY idx_oid (oid)
+  KEY idx_oid (oid),
+  KEY idx_owner (video_owner_uid),
+  KEY idx_reply_to (reply_to_uid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -116,6 +120,32 @@ def ensure_tables(uid):
             cur.execute(_DANMU_SCHEMA.format(table=danmu_table(uid)))
             cur.execute(_HISTORY_SCHEMA.format(table=history_table(uid)))
         conn.commit()
+    finally:
+        conn.close()
+    # 迁移: 为已有表补充新列
+    migrate_comment_table(uid)
+
+
+def migrate_comment_table(uid):
+    """为已有评论表添加 video_owner_uid 和 reply_to_uid 列(若不存在)。"""
+    tbl = comment_table(uid)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # 检查列是否存在
+            cur.execute(f"SHOW COLUMNS FROM `{tbl}` LIKE 'video_owner_uid'")
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE `{tbl}` ADD COLUMN video_owner_uid BIGINT DEFAULT NULL COMMENT '视频UP主uid'")
+                cur.execute(f"ALTER TABLE `{tbl}` ADD KEY idx_owner (video_owner_uid)")
+                print(f"[migrate] {tbl}: 已添加 video_owner_uid 列")
+            cur.execute(f"SHOW COLUMNS FROM `{tbl}` LIKE 'reply_to_uid'")
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE `{tbl}` ADD COLUMN reply_to_uid BIGINT DEFAULT NULL COMMENT '回复目标用户uid'")
+                cur.execute(f"ALTER TABLE `{tbl}` ADD KEY idx_reply_to (reply_to_uid)")
+                print(f"[migrate] {tbl}: 已添加 reply_to_uid 列")
+        conn.commit()
+    except pymysql.err.ProgrammingError:
+        pass  # 表不存在,跳过
     finally:
         conn.close()
 
@@ -409,5 +439,28 @@ def get_latest_history(uid, kind):
             return cur.fetchone()
     except pymysql.err.ProgrammingError:
         return None
+    finally:
+        conn.close()
+
+
+def list_all_comment_tables():
+    """列出数据库中所有 bilibili_comment_* 表,返回 [(table_name, uid), ...]。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+                "WHERE TABLE_SCHEMA=%s AND TABLE_NAME LIKE 'bilibili_comment_%%'",
+                (MYSQL["database"],),
+            )
+            tables = []
+            for (name,) in cur.fetchall():
+                # 从表名提取 uid
+                uid_str = name.replace("bilibili_comment_", "")
+                if uid_str.isdigit():
+                    tables.append((name, int(uid_str)))
+            return tables
+    except pymysql.err.ProgrammingError:
+        return []
     finally:
         conn.close()

@@ -54,6 +54,8 @@ _ROOT_RE = re.compile(r"[?&]root=(\d+)")
 _OID_RE = re.compile(r"[?&]oid=(\d+)")
 # 弹幕 dmid
 _DMID_RE = re.compile(r"[?&]dmid=(\d+)")
+# 回复目标: "回复 @用户名 :" 或 "回复 @用户名: "
+_REPLY_TO_RE = re.compile(r"回复\s*@([^ :：]+)\s*[:：]")
 
 
 def _parse_ctime(s):
@@ -81,6 +83,72 @@ def _is_data_card(card):
     if "爱来自aicu.cc" not in txt:
         return False
     return True
+
+
+# ---- B站API: 获取视频UP主 ----
+_video_owner_cache = {}
+
+
+def get_video_owner(oid):
+    """通过B站API获取视频oid的UP主uid。结果缓存。失败返回None。"""
+    if oid is None:
+        return None
+    if oid in _video_owner_cache:
+        return _video_owner_cache[oid]
+    try:
+        import requests
+        resp = requests.get(
+            f"https://api.bilibili.com/x/web-interface/view?aid={oid}",
+            headers={"User-Agent": _UA},
+            timeout=8,
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            owner_uid = data["data"]["owner"]["mid"]
+            _video_owner_cache[oid] = owner_uid
+            return owner_uid
+    except Exception as e:
+        print(f"[api] 获取视频oid={oid}的UP主失败: {e}")
+    _video_owner_cache[oid] = None
+    return None
+
+
+def resolve_video_owners(records):
+    """批量解析评论记录的video_owner_uid(带缓存,相同oid只请求一次)。"""
+    oids = set()
+    for rec in records:
+        oid = rec.get("oid")
+        if oid is not None and oid not in _video_owner_cache:
+            oids.add(oid)
+    if oids:
+        print(f"[api] 批量查询 {len(oids)} 个视频的UP主...")
+    for oid in oids:
+        get_video_owner(oid)
+    # 填充到记录中
+    for rec in records:
+        if rec.get("video_owner_uid") is None and rec.get("oid") is not None:
+            rec["video_owner_uid"] = _video_owner_cache.get(rec["oid"])
+
+
+def parse_reply_target(card):
+    """从评论卡中提取回复目标用户的uid。
+    aicu.cc 的回复评论卡中有 data-user-id 属性的链接。
+    返回 int 或 None。
+    """
+    # 方式1: 查找带 data-user-id 属性的 <a> 标签(回复目标)
+    for a in card.select("a[data-user-id]"):
+        user_id = a.get("data-user-id", "")
+        if user_id.isdigit():
+            return int(user_id)
+    # 方式2: 从 href 中查找 /space.bilibili.com/{uid} 模式(非视频链接)
+    for a in card.select("a[href]"):
+        href = a.get("href", "")
+        m = re.search(r"space\.bilibili\.com/(\d+)", href)
+        if m:
+            # 排除视频链接中的uid,只取回复目标的
+            if "/video/" not in href and "bilibili.com/video" not in href:
+                return int(m.group(1))
+    return None
 
 
 def parse_comment_card(card, uid):
@@ -117,6 +185,9 @@ def parse_comment_card(card, uid):
     # 直达链接(方式0 优先)
     url = next((h for h in hrefs if "#reply" in h), hrefs[0] if hrefs else None)
 
+    # 回复目标用户uid(从 data-user-id 属性或 space 链接提取)
+    reply_to_uid = parse_reply_target(card)
+
     return {
         "uid": int(uid),
         "oid": oid,
@@ -128,6 +199,8 @@ def parse_comment_card(card, uid):
         "category": None,
         "source": "aicu.cc",
         "url": url,
+        "video_owner_uid": None,  # 稍后由 resolve_video_owners 批量填充
+        "reply_to_uid": reply_to_uid,
     }
 
 
@@ -232,6 +305,11 @@ def _collect_kind(page, kind, uid):
             continue
         seen.add(key)
         records.append(rec)
+
+    # 评论类型: 批量解析视频UP主
+    if kind == "comment" and records:
+        resolve_video_owners(records)
+
     return records, total
 
 
