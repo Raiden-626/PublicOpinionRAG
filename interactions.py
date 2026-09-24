@@ -91,7 +91,7 @@ def _try_resolve_missing_owners(uid):
             # 取 oid 不重复且 video_owner_uid 为 NULL 的记录
             cur.execute(
                 f"SELECT DISTINCT id, oid FROM `{tbl}` "
-                f"WHERE video_owner_uid IS NULL AND oid IS NOT NULL LIMIT 200"
+                f"WHERE video_owner_uid IS NULL AND oid IS NOT NULL LIMIT 50"
             )
             rows = cur.fetchall()
         if not rows:
@@ -148,64 +148,46 @@ def find_interactions(uid_a, uid_b, resolve_owners=True):
     if resolve_owners:
         for uid in (uid_a, uid_b):
             tbl = db.comment_table(uid)
-            # 检查表是否存在
             conn = db.get_conn()
             try:
                 with conn.cursor() as cur:
                     cur.execute(f"SELECT 1 FROM `{tbl}` LIMIT 1")
-                resolved += _try_resolve_missing_owners(uid)
             except pymysql.err.ProgrammingError:
-                pass
-            finally:
                 conn.close()
+                continue
+            conn.close()
+            resolved += _try_resolve_missing_owners(uid)
 
-    # 查询互动记录
+    # 查询互动记录(单连接完成全部查询)
     a_to_b = []
     b_to_a = []
-
-    # 从 A 的评论表查 A→B 的互动
     a_table = db.comment_table(uid_a)
-    conn = db.get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT 1 FROM `{a_table}` LIMIT 1")
-        a_to_b.extend(_query_interactions_from_table(a_table, uid_a, uid_b))
-    except pymysql.err.ProgrammingError:
-        pass
-    finally:
-        conn.close()
-
-    # 从 B 的评论表查 B→A 的互动
     b_table = db.comment_table(uid_b)
-    conn = db.get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT 1 FROM `{b_table}` LIMIT 1")
-        b_to_a.extend(_query_interactions_from_table(b_table, uid_b, uid_a))
-    except pymysql.err.ProgrammingError:
-        pass
-    finally:
-        conn.close()
-
-    # 同时交叉查: 从 A 的表查 B→A, 从 B 的表查 A→B
-    # (如果 A 的表中有 B 发的评论, 或 B 的表中有 A 发的评论)
-    conn = db.get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT 1 FROM `{b_table}` LIMIT 1")
-        a_to_b.extend(_query_interactions_from_table(b_table, uid_a, uid_b))
-    except pymysql.err.ProgrammingError:
-        pass
-    finally:
-        conn.close()
 
     conn = db.get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(f"SELECT 1 FROM `{a_table}` LIMIT 1")
-        b_to_a.extend(_query_interactions_from_table(a_table, uid_b, uid_a))
-    except pymysql.err.ProgrammingError:
-        pass
+            # 检查两张表是否存在
+            a_exists, b_exists = False, False
+            try:
+                cur.execute(f"SELECT 1 FROM `{a_table}` LIMIT 1")
+                a_exists = True
+            except pymysql.err.ProgrammingError:
+                pass
+            try:
+                cur.execute(f"SELECT 1 FROM `{b_table}` LIMIT 1")
+                b_exists = True
+            except pymysql.err.ProgrammingError:
+                pass
+
+        # A 的表: 查 A→B 和 B→A
+        if a_exists:
+            a_to_b.extend(_query_interactions_from_table(a_table, uid_a, uid_b))
+            b_to_a.extend(_query_interactions_from_table(a_table, uid_b, uid_a))
+        # B 的表: 查 B→A 和 A→B
+        if b_exists:
+            b_to_a.extend(_query_interactions_from_table(b_table, uid_b, uid_a))
+            a_to_b.extend(_query_interactions_from_table(b_table, uid_a, uid_b))
     finally:
         conn.close()
 

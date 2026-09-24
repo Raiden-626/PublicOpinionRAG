@@ -87,28 +87,56 @@ def _is_data_card(card):
 
 # ---- B站API: 获取视频UP主 ----
 _video_owner_cache = {}
+_last_api_call = 0.0
 
 
 def get_video_owner(oid):
-    """通过B站API获取视频oid的UP主uid。结果缓存。失败返回None。"""
+    """通过B站API获取视频oid的UP主uid。结果缓存。失败返回None。
+    自带限流: 两次请求间至少间隔 0.3s,遇到 -412/超时自动重试最多 2 次。
+    """
+    global _last_api_call
     if oid is None:
         return None
     if oid in _video_owner_cache:
         return _video_owner_cache[oid]
-    try:
-        import requests
-        resp = requests.get(
-            f"https://api.bilibili.com/x/web-interface/view?aid={oid}",
-            headers={"User-Agent": _UA},
-            timeout=8,
-        )
-        data = resp.json()
-        if data.get("code") == 0:
-            owner_uid = data["data"]["owner"]["mid"]
-            _video_owner_cache[oid] = owner_uid
-            return owner_uid
-    except Exception as e:
-        print(f"[api] 获取视频oid={oid}的UP主失败: {e}")
+
+    import requests, time
+
+    for attempt in range(3):
+        # 限流: 保证两次请求间至少有间隔
+        elapsed = time.time() - _last_api_call
+        if elapsed < 0.3:
+            time.sleep(0.3 - elapsed)
+        _last_api_call = time.time()
+
+        try:
+            resp = requests.get(
+                f"https://api.bilibili.com/x/web-interface/view?aid={oid}",
+                headers={"User-Agent": _UA},
+                timeout=10,
+            )
+            data = resp.json()
+            code = data.get("code")
+            if code == 0:
+                owner_uid = data["data"]["owner"]["mid"]
+                _video_owner_cache[oid] = owner_uid
+                return owner_uid
+            if code == -412:
+                # 风控拦截,等待后重试
+                wait = 2 * (attempt + 1)
+                print(f"[api] oid={oid} 触发风控, {wait}s 后重试({attempt+1}/3)")
+                time.sleep(wait)
+                continue
+            # 其他错误码(-404 视频不存在 等),不重试
+            break
+        except Exception as e:
+            if attempt < 2:
+                wait = 2 * (attempt + 1)
+                print(f"[api] oid={oid} 请求异常: {e}, {wait}s 后重试({attempt+1}/3)")
+                time.sleep(wait)
+            else:
+                print(f"[api] 获取视频oid={oid}的UP主最终失败: {e}")
+
     _video_owner_cache[oid] = None
     return None
 

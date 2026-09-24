@@ -3,7 +3,6 @@
 Chroma 的 metadata 里存 (mysql_table, mysql_id),检索命中后用 mysql_id 回查此处拿原文与完整上下文。
 """
 import hashlib
-import json
 from datetime import datetime
 
 import pymysql
@@ -422,45 +421,5 @@ def clear_uid_data(uid, kinds=("comment", "danmu")):
                 except pymysql.err.ProgrammingError:
                     pass  # 表不存在,跳过
         return total_deleted
-    finally:
-        conn.close()
-
-
-def get_latest_history(uid, kind):
-    """获取该 uid+kind 的最新(唯一)记录。返回 dict 或 None。"""
-    tbl = history_table(uid)
-    conn = get_conn()
-    try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            cur.execute(
-                f"SELECT * FROM `{tbl}` WHERE uid=%s AND kind=%s",
-                (uid, kind),
-            )
-            return cur.fetchone()
-    except pymysql.err.ProgrammingError:
-        return None
-    finally:
-        conn.close()
-
-
-def list_all_comment_tables():
-    """列出数据库中所有 bilibili_comment_* 表,返回 [(table_name, uid), ...]。"""
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
-                "WHERE TABLE_SCHEMA=%s AND TABLE_NAME LIKE 'bilibili_comment_%%'",
-                (MYSQL["database"],),
-            )
-            tables = []
-            for (name,) in cur.fetchall():
-                # 从表名提取 uid
-                uid_str = name.replace("bilibili_comment_", "")
-                if uid_str.isdigit():
-                    tables.append((name, int(uid_str)))
-            return tables
-    except pymysql.err.ProgrammingError:
-        return []
     finally:
         conn.close()

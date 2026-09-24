@@ -14,7 +14,6 @@
   浏览器打开 http://127.0.0.1:5000/
 """
 
-import json
 import os
 import threading
 import time
