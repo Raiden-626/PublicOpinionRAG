@@ -1,10 +1,8 @@
 """用户互动分析: 查询两个B站用户之间的评论互动关系。
 
 互动类型:
-  1. A 在 B 的视频下发评论 (video_owner_uid = B, 评论者 = A)
-  2. A 回复 B 的评论 (reply_to_uid = B, 评论者 = A)
-  3. B 在 A 的视频下发评论 (反向)
-  4. B 回复 A 的评论 (反向)
+  1. on_video  — A 在 B 的视频下发评论 (video_owner_uid = B)
+  2. same_thread — A 与 B 在同一评论楼中出现 (rpid 相同)
 
 数据来源: MySQL 中已入库的评论数据 + B站API实时补充视频UP主信息。
 """
@@ -16,24 +14,18 @@ from ingest import get_video_owner
 
 
 def _query_interactions_from_table(table, commenter_uid, target_uid):
-    """从指定评论表中查找 commenter_uid 与 target_uid 之间的互动。
+    """从指定评论表中查找 commenter_uid 在 target_uid 视频下发评论的记录。
 
     返回 list[dict],每条包含:
-      - type: "on_video"(在对方视频下评论) 或 "reply"(回复对方评论)
-      - content: 评论内容
-      - oid: 视频oid
-      - bvid: BV号
-      - ctime: 评论时间
-      - url: 链接
-      - like_count: 点赞数
+      - type: "on_video"
+      - content, oid, bvid, ctime, url, mysql_id
     """
     conn = db.get_conn()
     results = []
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            # 类型1: commenter 在 target 的视频下发评论
             cur.execute(
-                f"SELECT id, content, oid, bvid, ctime, url, like_count "
+                f"SELECT id, content, oid, bvid, ctime, url "
                 f"FROM `{table}` WHERE uid=%s AND video_owner_uid=%s "
                 f"ORDER BY ctime DESC",
                 (commenter_uid, target_uid),
@@ -48,28 +40,6 @@ def _query_interactions_from_table(table, commenter_uid, target_uid):
                     "bvid": row["bvid"],
                     "ctime": row["ctime"].strftime("%Y-%m-%d %H:%M") if row.get("ctime") else None,
                     "url": row["url"],
-                    "like_count": row["like_count"],
-                    "mysql_id": row["id"],
-                })
-
-            # 类型2: commenter 回复 target 的评论
-            cur.execute(
-                f"SELECT id, content, oid, bvid, ctime, url, like_count "
-                f"FROM `{table}` WHERE uid=%s AND reply_to_uid=%s "
-                f"ORDER BY ctime DESC",
-                (commenter_uid, target_uid),
-            )
-            for row in cur.fetchall():
-                results.append({
-                    "type": "reply",
-                    "commenter_uid": commenter_uid,
-                    "target_uid": target_uid,
-                    "content": row["content"],
-                    "oid": row["oid"],
-                    "bvid": row["bvid"],
-                    "ctime": row["ctime"].strftime("%Y-%m-%d %H:%M") if row.get("ctime") else None,
-                    "url": row["url"],
-                    "like_count": row["like_count"],
                     "mysql_id": row["id"],
                 })
     except pymysql.err.ProgrammingError:
@@ -77,6 +47,85 @@ def _query_interactions_from_table(table, commenter_uid, target_uid):
     finally:
         conn.close()
     return results
+
+
+def _query_same_thread(table_a, table_b, uid_a, uid_b):
+    """查找两个用户在同一评论楼(rpid 相同)中的记录。
+
+    返回 (a_records, b_records)。
+    """
+    a_records, b_records = [], []
+    conn = db.get_conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            # 取 A 表中所有非空 rpid
+            cur.execute(
+                f"SELECT DISTINCT rpid FROM `{table_a}` WHERE rpid IS NOT NULL"
+            )
+            a_rpids = {row["rpid"] for row in cur.fetchall()}
+            if not a_rpids:
+                return a_records, b_records
+
+            # 取 B 表中所有非空 rpid
+            cur.execute(
+                f"SELECT DISTINCT rpid FROM `{table_b}` WHERE rpid IS NOT NULL"
+            )
+            b_rpids = {row["rpid"] for row in cur.fetchall()}
+
+            # 交集: 两人共同出现的评论楼
+            shared_rpids = a_rpids & b_rpids
+            if not shared_rpids:
+                return a_records, b_records
+
+            placeholders = ",".join(["%s"] * len(shared_rpids))
+            args = list(shared_rpids)
+
+            # 从 A 的表取记录
+            cur.execute(
+                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid "
+                f"FROM `{table_a}` WHERE rpid IN ({placeholders}) "
+                f"ORDER BY ctime DESC",
+                args,
+            )
+            for row in cur.fetchall():
+                a_records.append({
+                    "type": "same_thread",
+                    "commenter_uid": uid_a,
+                    "target_uid": uid_b,
+                    "content": row["content"],
+                    "oid": row["oid"],
+                    "bvid": row["bvid"],
+                    "ctime": row["ctime"].strftime("%Y-%m-%d %H:%M") if row.get("ctime") else None,
+                    "url": row["url"],
+                    "rpid": row["rpid"],
+                    "mysql_id": row["id"],
+                })
+
+            # 从 B 的表取记录
+            cur.execute(
+                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid "
+                f"FROM `{table_b}` WHERE rpid IN ({placeholders}) "
+                f"ORDER BY ctime DESC",
+                args,
+            )
+            for row in cur.fetchall():
+                b_records.append({
+                    "type": "same_thread",
+                    "commenter_uid": uid_b,
+                    "target_uid": uid_a,
+                    "content": row["content"],
+                    "oid": row["oid"],
+                    "bvid": row["bvid"],
+                    "ctime": row["ctime"].strftime("%Y-%m-%d %H:%M") if row.get("ctime") else None,
+                    "url": row["url"],
+                    "rpid": row["rpid"],
+                    "mysql_id": row["id"],
+                })
+    except pymysql.err.ProgrammingError:
+        pass
+    finally:
+        conn.close()
+    return a_records, b_records
 
 
 def _try_resolve_missing_owners(uid):
@@ -180,30 +229,45 @@ def find_interactions(uid_a, uid_b, resolve_owners=True):
             except pymysql.err.ProgrammingError:
                 pass
 
-        # A 的表: 查 A→B 和 B→A
+        # A 的表: 查 A→B 和 B→A 的 on_video
         if a_exists:
             a_to_b.extend(_query_interactions_from_table(a_table, uid_a, uid_b))
             b_to_a.extend(_query_interactions_from_table(a_table, uid_b, uid_a))
-        # B 的表: 查 B→A 和 A→B
+        # B 的表: 查 B→A 和 A→B 的 on_video
         if b_exists:
             b_to_a.extend(_query_interactions_from_table(b_table, uid_b, uid_a))
             a_to_b.extend(_query_interactions_from_table(b_table, uid_a, uid_b))
+
+        # 同楼互动(rpid 相同)
+        if a_exists and b_exists:
+            thread_a, thread_b = _query_same_thread(a_table, b_table, uid_a, uid_b)
+            # 去重: 排除已通过 on_video 匹配到的记录
+            seen_a = {r["mysql_id"] for r in a_to_b}
+            seen_b = {r["mysql_id"] for r in b_to_a}
+            for r in thread_a:
+                if r["mysql_id"] not in seen_a:
+                    a_to_b.append(r)
+                    seen_a.add(r["mysql_id"])
+            for r in thread_b:
+                if r["mysql_id"] not in seen_b:
+                    b_to_a.append(r)
+                    seen_b.add(r["mysql_id"])
     finally:
         conn.close()
 
     # 统计摘要
     a_on_video = [r for r in a_to_b if r["type"] == "on_video"]
-    a_reply = [r for r in a_to_b if r["type"] == "reply"]
+    a_thread = [r for r in a_to_b if r["type"] == "same_thread"]
     b_on_video = [r for r in b_to_a if r["type"] == "on_video"]
-    b_reply = [r for r in b_to_a if r["type"] == "reply"]
+    b_thread = [r for r in b_to_a if r["type"] == "same_thread"]
 
     summary = {
         "a_to_b_total": len(a_to_b),
         "a_on_b_video": len(a_on_video),
-        "a_reply_to_b": len(a_reply),
+        "a_same_thread": len(a_thread),
         "b_to_a_total": len(b_to_a),
         "b_on_a_video": len(b_on_video),
-        "b_reply_to_a": len(b_reply),
+        "b_same_thread": len(b_thread),
         "total": len(a_to_b) + len(b_to_a),
     }
 
@@ -226,14 +290,15 @@ if __name__ == "__main__":
     result = find_interactions(ua, ub)
     s = result["summary"]
     print(f"\n=== UID {ua} ↔ UID {ub} 互动分析 ===")
-    print(f"A→B: {s['a_to_b_total']} 条 (在视频下评论: {s['a_on_b_video']}, 回复评论: {s['a_reply_to_b']})")
-    print(f"B→A: {s['b_to_a_total']} 条 (在视频下评论: {s['b_on_a_video']}, 回复评论: {s['b_reply_to_a']})")
+    print(f"A→B: {s['a_to_b_total']} 条 (在视频下评论: {s['a_on_b_video']}, 同楼互动: {s['a_same_thread']})")
+    print(f"B→A: {s['b_to_a_total']} 条 (在视频下评论: {s['b_on_a_video']}, 同楼互动: {s['b_same_thread']})")
     print(f"总计: {s['total']} 条互动")
     if result["resolved_owners"]:
         print(f"(新解析了 {result['resolved_owners']} 条视频的UP主)")
+    _TYPE_LABEL = {"on_video": "在视频下评论", "same_thread": "同楼互动"}
     for label, records in [("A→B", result["a_to_b"]), ("B→A", result["b_to_a"])]:
         if records:
             print(f"\n--- {label} ---")
             for r in records[:20]:
-                tp = "在视频下评论" if r["type"] == "on_video" else "回复评论"
+                tp = _TYPE_LABEL.get(r["type"], r["type"])
                 print(f"  [{r['ctime'] or '未知'}] {tp}: {r['content'][:50]}")

@@ -38,19 +38,16 @@ CREATE TABLE IF NOT EXISTS `{table}` (
   root_id         BIGINT       DEFAULT NULL COMMENT '根评论id',
   content         TEXT         NOT NULL COMMENT '评论正文',
   ctime           DATETIME     DEFAULT NULL COMMENT '评论时间',
-  like_count      INT          DEFAULT NULL COMMENT '点赞数',
   category        VARCHAR(50)  DEFAULT NULL COMMENT '分区/分类',
   source          VARCHAR(50)  DEFAULT NULL COMMENT '数据来源,如 aicu.cc',
   url             VARCHAR(500) DEFAULT NULL COMMENT '直达链接',
   video_owner_uid BIGINT       DEFAULT NULL COMMENT '视频UP主uid(从B站API获取)',
-  reply_to_uid    BIGINT       DEFAULT NULL COMMENT '回复目标用户uid(从评论卡解析)',
   raw             JSON         DEFAULT NULL COMMENT '原始字段备份',
   ingested_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_rpid (rpid),
   KEY idx_ctime (ctime),
   KEY idx_oid (oid),
-  KEY idx_owner (video_owner_uid),
-  KEY idx_reply_to (reply_to_uid)
+  KEY idx_owner (video_owner_uid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -126,7 +123,7 @@ def ensure_tables(uid):
 
 
 def migrate_comment_table(uid):
-    """为已有评论表添加 video_owner_uid 和 reply_to_uid 列(若不存在)。"""
+    """为已有评论表添加 video_owner_uid 列(若不存在)。"""
     tbl = comment_table(uid)
     conn = get_conn()
     try:
@@ -137,11 +134,6 @@ def migrate_comment_table(uid):
                 cur.execute(f"ALTER TABLE `{tbl}` ADD COLUMN video_owner_uid BIGINT DEFAULT NULL COMMENT '视频UP主uid'")
                 cur.execute(f"ALTER TABLE `{tbl}` ADD KEY idx_owner (video_owner_uid)")
                 print(f"[migrate] {tbl}: 已添加 video_owner_uid 列")
-            cur.execute(f"SHOW COLUMNS FROM `{tbl}` LIKE 'reply_to_uid'")
-            if not cur.fetchone():
-                cur.execute(f"ALTER TABLE `{tbl}` ADD COLUMN reply_to_uid BIGINT DEFAULT NULL COMMENT '回复目标用户uid'")
-                cur.execute(f"ALTER TABLE `{tbl}` ADD KEY idx_reply_to (reply_to_uid)")
-                print(f"[migrate] {tbl}: 已添加 reply_to_uid 列")
         conn.commit()
     except pymysql.err.ProgrammingError:
         pass  # 表不存在,跳过

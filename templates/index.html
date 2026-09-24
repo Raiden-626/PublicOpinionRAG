@@ -951,12 +951,13 @@
     function sampleTable(title, rows, cls) {
       if (!rows || !rows.length) return "";
       let h = '<h3 style="margin-top:14px"><span class="tag ' + cls + '">' + title + '</span> 样本(前 ' + rows.length + ' 条)</h3>';
-      h += '<table class="data"><tr><th>时间</th><th>内容</th>' + (title === "评论" ? '<th>赞</th>' : '<th>偏移</th>') + '<th>链接</th></tr>';
+      const hasOffset = title !== "评论";
+      h += '<table class="data"><tr><th>时间</th><th>内容</th>' + (hasOffset ? '<th>偏移</th>' : '') + '<th>链接</th></tr>';
       for (const r of rows) {
-        const extra = title === "评论" ? (r.like_count != null ? r.like_count : "-") : (r.video_offset != null ? r.video_offset + "s" : "-");
+        const extra = hasOffset ? (r.video_offset != null ? r.video_offset + "s" : "-") : "";
         h += '<tr><td style="white-space:nowrap">' + (r.ctime || "-") + '</td>' +
           '<td class="c">' + escapeHtml(r.content) + '</td>' +
-          '<td>' + extra + '</td>' +
+          (hasOffset ? '<td>' + extra + '</td>' : '') +
           '<td>' + (r.url ? '<a href="' + r.url + '" target="_blank">查看</a>' : "-") + '</td></tr>';
       }
       return h + '</table>';
@@ -1185,29 +1186,27 @@
 
     function renderInteractionGroup(title, records, commenterUid, targetUid) {
       const onVideo = records.filter(r => r.type === "on_video");
-      const replies = records.filter(r => r.type === "reply");
+      const sameThread = records.filter(r => r.type === "same_thread");
 
       let h = '<h3 style="margin-top:18px">' + title + ' <span class="tag cm">' + records.length + ' 条</span></h3>';
 
       if (onVideo.length) {
         h += '<h4 style="color:var(--muted);font-size:13px;margin:10px 0 6px">在对方视频下评论 (' + onVideo.length + ')</h4>';
-        h += '<table class="data"><tr><th>时间</th><th>内容</th><th>赞</th><th>链接</th></tr>';
+        h += '<table class="data"><tr><th>时间</th><th>内容</th><th>链接</th></tr>';
         for (const r of onVideo) {
           h += '<tr><td style="white-space:nowrap">' + (r.ctime || "-") + '</td>' +
             '<td class="c">' + escapeHtml(r.content) + '</td>' +
-            '<td>' + (r.like_count != null ? r.like_count : "-") + '</td>' +
             '<td>' + (r.url ? '<a href="' + r.url + '" target="_blank">查看</a>' : "-") + '</td></tr>';
         }
         h += '</table>';
       }
 
-      if (replies.length) {
-        h += '<h4 style="color:var(--muted);font-size:13px;margin:10px 0 6px">回复对方评论 (' + replies.length + ')</h4>';
-        h += '<table class="data"><tr><th>时间</th><th>内容</th><th>赞</th><th>链接</th></tr>';
-        for (const r of replies) {
+      if (sameThread.length) {
+        h += '<h4 style="color:var(--muted);font-size:13px;margin:10px 0 6px">同楼互动 (' + sameThread.length + ')</h4>';
+        h += '<table class="data"><tr><th>时间</th><th>内容</th><th>链接</th></tr>';
+        for (const r of sameThread) {
           h += '<tr><td style="white-space:nowrap">' + (r.ctime || "-") + '</td>' +
             '<td class="c">' + escapeHtml(r.content) + '</td>' +
-            '<td>' + (r.like_count != null ? r.like_count : "-") + '</td>' +
             '<td>' + (r.url ? '<a href="' + r.url + '" target="_blank">查看</a>' : "-") + '</td></tr>';
         }
         h += '</table>';

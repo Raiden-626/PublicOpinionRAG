@@ -158,40 +158,14 @@ def resolve_video_owners(records):
             rec["video_owner_uid"] = _video_owner_cache.get(rec["oid"])
 
 
-def parse_reply_target(card):
-    """从评论卡中提取回复目标用户的uid。
-    aicu.cc 的回复评论卡中有 data-user-id 属性的链接。
-    返回 int 或 None。
-    """
-    # 方式1: 查找带 data-user-id 属性的 <a> 标签(回复目标)
-    for a in card.select("a[data-user-id]"):
-        user_id = a.get("data-user-id", "")
-        if user_id.isdigit():
-            return int(user_id)
-    # 方式2: 从 href 中查找 /space.bilibili.com/{uid} 模式(非视频链接)
-    for a in card.select("a[href]"):
-        href = a.get("href", "")
-        m = re.search(r"space\.bilibili\.com/(\d+)", href)
-        if m:
-            # 排除视频链接中的uid,只取回复目标的
-            if "/video/" not in href and "bilibili.com/video" not in href:
-                return int(m.group(1))
-    return None
-
-
 def parse_comment_card(card, uid):
     """从一张评论卡提取结构化字段。"""
     caps = [c.get_text(" ", strip=True) for c in card.select("span.MuiTypography-caption")]
     bodies = [p.get_text(" ", strip=True) for p in card.select("p.MuiTypography-body1")]
     content = bodies[0] if bodies else ""
-    # 首个 caption = "时间 [点赞数?]"; 第二个 = "uid:X 爱来自aicu.cc"
+    # 首个 caption = "时间"; 第二个 = "uid:X 爱来自aicu.cc"
     time_cap = caps[0] if caps else ""
     ctime = _parse_ctime(time_cap)
-    # 末尾数字疑似 like_count
-    like = None
-    mt = re.search(r"(\d+)\s*$", time_cap.split("爱来自")[0])
-    if mt:
-        like = int(mt.group(1))
 
     hrefs = [a.get("href", "") for a in card.select("a[href]")]
     oid = root_id = None
@@ -213,9 +187,6 @@ def parse_comment_card(card, uid):
     # 直达链接(方式0 优先)
     url = next((h for h in hrefs if "#reply" in h), hrefs[0] if hrefs else None)
 
-    # 回复目标用户uid(从 data-user-id 属性或 space 链接提取)
-    reply_to_uid = parse_reply_target(card)
-
     return {
         "uid": int(uid),
         "oid": oid,
@@ -223,12 +194,10 @@ def parse_comment_card(card, uid):
         "rpid": root_id,  # root_id 即评论 rpid,作去重键
         "content": content,
         "ctime": ctime,
-        "like_count": like,
         "category": None,
         "source": "aicu.cc",
         "url": url,
         "video_owner_uid": None,  # 稍后由 resolve_video_owners 批量填充
-        "reply_to_uid": reply_to_uid,
     }
 
 
@@ -392,7 +361,6 @@ def _sample(rec, kind):
         "content": rec["content"],
         "ctime": rec["ctime"].strftime("%Y-%m-%d %H:%M") if rec.get("ctime") else None,
         "url": rec.get("url"),
-        "like_count": rec.get("like_count"),
     }
     if kind == "danmu":
         d["video_offset"] = rec.get("video_offset")
