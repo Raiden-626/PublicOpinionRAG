@@ -115,7 +115,22 @@ def get_video_owner(oid):
                 headers={"User-Agent": _UA},
                 timeout=10,
             )
-            data = resp.json()
+            # 先检查 HTTP 状态码
+            if resp.status_code != 200:
+                print(f"[api] oid={oid} HTTP {resp.status_code}, 不重试")
+                break
+            # 检查 Content-Type,防止空响应或 HTML 错误页
+            ct = resp.headers.get("Content-Type", "")
+            if "json" not in ct and "javascript" not in ct:
+                body_preview = resp.text[:100] if resp.text else "(空)"
+                print(f"[api] oid={oid} 响应非JSON(Content-Type={ct}), 内容: {body_preview}")
+                break
+            # 解析 JSON
+            try:
+                data = resp.json()
+            except Exception:
+                print(f"[api] oid={oid} JSON解析失败, 内容: {resp.text[:100]}")
+                break
             code = data.get("code")
             if code == 0:
                 owner_uid = data["data"]["owner"]["mid"]
@@ -127,12 +142,20 @@ def get_video_owner(oid):
                 print(f"[api] oid={oid} 触发风控, {wait}s 后重试({attempt+1}/3)")
                 time.sleep(wait)
                 continue
-            # 其他错误码(-404 视频不存在 等),不重试
+            # 其他业务错误码(-404 视频不存在 等),不重试
+            print(f"[api] oid={oid} 业务错误 code={code}")
             break
-        except Exception as e:
+        except requests.exceptions.Timeout:
             if attempt < 2:
                 wait = 2 * (attempt + 1)
-                print(f"[api] oid={oid} 请求异常: {e}, {wait}s 后重试({attempt+1}/3)")
+                print(f"[api] oid={oid} 请求超时, {wait}s 后重试({attempt+1}/3)")
+                time.sleep(wait)
+            else:
+                print(f"[api] 获取视频oid={oid}的UP主最终失败: 超时")
+        except requests.exceptions.RequestException as e:
+            if attempt < 2:
+                wait = 2 * (attempt + 1)
+                print(f"[api] oid={oid} 网络异常: {e}, {wait}s 后重试({attempt+1}/3)")
                 time.sleep(wait)
             else:
                 print(f"[api] 获取视频oid={oid}的UP主最终失败: {e}")
