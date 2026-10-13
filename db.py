@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS `{table}` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+_INGEST_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS `ingest_state` (
+  uid          BIGINT       NOT NULL,
+  kind         VARCHAR(20)  NOT NULL COMMENT 'comment/danmu',
+  last_ctime   DATETIME     DEFAULT NULL COMMENT '上次入库的最新记录时间(watermark)',
+  updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (uid, kind)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 
 def get_conn():
     return pymysql.connect(**MYSQL, autocommit=False)
@@ -120,6 +130,8 @@ def ensure_tables(uid):
         conn.close()
     # 迁移: 为已有表补充新列
     migrate_comment_table(uid)
+    # 增量入库状态表
+    ensure_ingest_state_table()
 
 
 def migrate_comment_table(uid):
@@ -137,6 +149,73 @@ def migrate_comment_table(uid):
         conn.commit()
     except pymysql.err.ProgrammingError:
         pass  # 表不存在,跳过
+    finally:
+        conn.close()
+
+
+# ---- 增量入库状态 ----
+
+def ensure_ingest_state_table():
+    """创建 ingest_state 表(若不存在)。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_INGEST_STATE_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ingest_state(uid, kind):
+    """获取增量入库的 watermark(上次最新 ctime)。返回 datetime 或 None。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT last_ctime FROM `ingest_state` WHERE uid=%s AND kind=%s",
+                (uid, kind),
+            )
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+    except pymysql.err.ProgrammingError:
+        return None
+    finally:
+        conn.close()
+
+
+def set_ingest_state(uid, kind, last_ctime):
+    """更新增量入库的 watermark。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO `ingest_state` (uid, kind, last_ctime) VALUES (%s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE last_ctime=%s",
+                (uid, kind, last_ctime, last_ctime),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_ingest_state(uid, kind=None):
+    """清除增量入库状态。kind=None 时清除该 uid 的全部状态。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if kind:
+                cur.execute(
+                    "DELETE FROM `ingest_state` WHERE uid=%s AND kind=%s",
+                    (uid, kind),
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM `ingest_state` WHERE uid=%s",
+                    (uid,),
+                )
+        conn.commit()
+    except pymysql.err.ProgrammingError:
+        pass
     finally:
         conn.close()
 
@@ -394,7 +473,7 @@ def delete_history(uid, record_id):
 
 
 def clear_uid_data(uid, kinds=("comment", "danmu")):
-    """清空指定 uid 的评论和弹幕数据。返回删除的行数。
+    """清空指定 uid 的评论和弹幕数据,同时重置增量入库状态。返回删除的行数。
     用于覆盖模式:先清空再重新入库。
     """
     conn = get_conn()
@@ -414,4 +493,7 @@ def clear_uid_data(uid, kinds=("comment", "danmu")):
                     pass  # 表不存在,跳过
         return total_deleted
     finally:
+        # 重置增量入库状态
+        for kind in kinds:
+            clear_ingest_state(uid, kind)
         conn.close()

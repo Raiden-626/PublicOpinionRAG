@@ -370,10 +370,16 @@ def _sample(rec, kind):
 def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, overwrite=False):
     """抓取 + 入 MySQL + 入 Chroma。
 
-    - MySQL: 按 rpid/dmid 去重(INSERT IGNORE),返回新分配 id
-    - Chroma: 仅对新增行做向量化入库(metadata 携 mysql_table/mysql_id/uid)
-    - overwrite=True 时,先清空该 UID 的旧数据再入库(完全覆盖)
-    返回 dict: {fetched:{comment,danmu}, inserted:{comment,danmu}, samples:{comment,danmu}}
+    增量模式(默认):
+      - 读取 ingest_state 表中该 uid+kind 的 watermark(上次最新 ctime)
+      - 抓取后只处理 ctime > watermark 的新记录
+      - 处理完毕后更新 watermark
+      - 首次抓取时 watermark=None,等价于全量
+
+    覆盖模式(overwrite=True):
+      - 清空旧数据 + 重置 watermark,然后全量入库
+
+    返回 dict: {fetched, inserted, samples, incremental}
     """
     import db
     import vector_store
@@ -381,21 +387,45 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, o
 
     db.ensure_tables(uid)
 
-    # 覆盖模式:先清空旧数据
+    # 覆盖模式:先清空旧数据 + 重置 watermark
     if overwrite:
         print(f"[overwrite] 清空 uid={uid} 的旧数据...")
         mysql_deleted = db.clear_uid_data(uid, kinds=kinds)
         chroma_deleted = vector_store.clear_by_uid(uid)
         print(f"[overwrite] MySQL 删除 {mysql_deleted} 行, Chroma 删除 {chroma_deleted} 条向量")
 
+    # 读取增量 watermark(覆盖模式清除后读到 None → 全量)
+    watermarks = {}
+    incremental = not overwrite
+    for kind in kinds:
+        wm = db.get_ingest_state(uid, kind)
+        watermarks[kind] = wm
+        if wm:
+            print(f"[{kind}] 增量模式: watermark={wm.strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            print(f"[{kind}] 全量模式(首次抓取或无 watermark)")
+
     data = scrape_uid(uid, kinds=kinds, headless=headless)
 
-    result = {"fetched": {}, "inserted": {}, "samples": {}}
+    result = {"fetched": {}, "inserted": {}, "samples": {}, "incremental": incremental}
     for kind, records in data.items():
         table = db.table_for(kind, uid)
         insert = db.insert_comment if kind == "comment" else db.insert_danmu
+        watermark = watermarks.get(kind)
+
+        # 增量过滤: 只保留 ctime > watermark 的记录
+        if watermark:
+            new_records = [r for r in records if r.get("ctime") and r["ctime"] > watermark]
+            skipped = len(records) - len(new_records)
+            if skipped:
+                print(f"[{kind}] 增量过滤: 跳过 {skipped} 条旧记录(ctime ≤ watermark)")
+            records_to_process = new_records
+        else:
+            records_to_process = records
+
+        # 入库 MySQL
         new_rows = []
-        for rec in records:
+        for rec in records_to_process:
             row = _to_mysql_row(rec, kind)
             mysql_id = insert(uid, row)
             if mysql_id is None:
@@ -407,25 +437,27 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, o
         result["samples"][kind] = [_sample(r, kind) for r in records[:5]]
 
         if not new_rows:
-            print(f"[{kind}] 无新增行(全部已存在),检查 Chroma 向量是否完整…")
-            # 检查 Chroma 中是否已有该 uid+kind 的向量
+            # 无新增行,检查 Chroma 向量是否完整
             existing_mids = vector_store.get_mysql_ids(
                 where={"$and": [{"uid": uid}, {"mysql_table": table}]}
             )
             if existing_mids:
-                print(f"[{kind}] Chroma 已有 {len(existing_mids)} 条向量,跳过")
+                print(f"[{kind}] 无新增行,Chroma 已有 {len(existing_mids)} 条向量,跳过")
+                # 更新 watermark(即使无新行,也推进到本次抓取的最大 ctime)
+                _update_watermark(uid, kind, records_to_process, watermark)
                 continue
             # Chroma 中没有向量,需要补全(从 MySQL 取全部行做向量化)
             from db import fetch_all_ids, fetch_rows_by_ids
             all_ids = fetch_all_ids(kind, uid)
             if not all_ids:
                 print(f"[{kind}] MySQL 中也无数据,跳过")
+                _update_watermark(uid, kind, records_to_process, watermark)
                 continue
             print(f"[{kind}] Chroma 缺少向量,从 MySQL 补全 {len(all_ids)} 条…")
             rows = fetch_rows_by_ids(kind, uid, all_ids)
             new_rows = [(r["id"], r) for r in rows]
 
-        # 批量向量化(带重试,最多 2 次)
+        # 批量向量化(带重试,最多 3 次)
         texts = [r[1]["content"] for r in new_rows]
         vecs = None
         for attempt in range(3):
@@ -439,6 +471,7 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, o
                 else:
                     print(f"[{kind}] 向量化最终失败:{e}（数据已入 MySQL,可稍后补向量）")
         if vecs is None:
+            _update_watermark(uid, kind, records_to_process, watermark)
             continue
 
         ids, metas, docs = [], [], []
@@ -456,7 +489,24 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, o
             docs.append(f"[{ctime_str}] {rec['content']}")
         vector_store.add(ids=ids, embeddings=vecs, documents=docs, metadatas=metas)
         print(f"[{kind}] 新增 {len(new_rows)} 条入库(MySQL + Chroma)")
+
+        # 更新 watermark
+        _update_watermark(uid, kind, records_to_process, watermark)
+
     return result
+
+
+def _update_watermark(uid, kind, records, old_watermark):
+    """将 watermark 推进到本次处理记录中的最大 ctime。"""
+    import db
+    ctimes = [r["ctime"] for r in records if r.get("ctime")]
+    if not ctimes:
+        return
+    max_ctime = max(ctimes)
+    # 只在 max_ctime 超过旧 watermark 时才推进
+    if old_watermark is None or max_ctime > old_watermark:
+        db.set_ingest_state(uid, kind, max_ctime)
+        print(f"[{kind}] watermark 更新为 {max_ctime.strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 if __name__ == "__main__":

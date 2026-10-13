@@ -930,7 +930,8 @@
         clearInterval(timer);
         if (!r.ok) throw new Error(j.error);
         const f = j.fetched || {}, i = j.inserted || {}, s = j.samples || {};
-        $("ingestMeta").textContent = '抓取 评论' + (f.comment || 0) + '/弹幕' + (f.danmu || 0) + ' · 新增 评论' + (i.comment || 0) + '/弹幕' + (i.danmu || 0);
+        const prefix = j.incremental ? "[增量] " : "";
+        $("ingestMeta").textContent = prefix + '抓取 评论' + (f.comment || 0) + '/弹幕' + (f.danmu || 0) + ' · 新增 评论' + (i.comment || 0) + '/弹幕' + (i.danmu || 0);
         hasData = true;
         updateButtons();
         ssSave();
