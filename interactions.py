@@ -10,7 +10,7 @@
 import pymysql
 
 import db
-from ingest import get_video_owner
+from ingest import get_video_info
 
 
 def _query_interactions_from_table(table, commenter_uid, target_uid):
@@ -25,7 +25,7 @@ def _query_interactions_from_table(table, commenter_uid, target_uid):
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
-                f"SELECT id, content, oid, bvid, ctime, url "
+                f"SELECT id, content, oid, bvid, ctime, url, tid, tname, tags "
                 f"FROM `{table}` WHERE uid=%s AND video_owner_uid=%s "
                 f"ORDER BY ctime DESC",
                 (commenter_uid, target_uid),
@@ -40,6 +40,9 @@ def _query_interactions_from_table(table, commenter_uid, target_uid):
                     "bvid": row["bvid"],
                     "ctime": row["ctime"].strftime("%Y-%m-%d %H:%M") if row.get("ctime") else None,
                     "url": row["url"],
+                    "tid": row.get("tid"),
+                    "tname": row.get("tname"),
+                    "tags": row.get("tags"),
                     "mysql_id": row["id"],
                 })
     except pymysql.err.ProgrammingError:
@@ -82,7 +85,7 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
 
             # 从 A 的表取记录
             cur.execute(
-                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid "
+                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid, tid, tname, tags "
                 f"FROM `{table_a}` WHERE rpid IN ({placeholders}) "
                 f"ORDER BY ctime DESC",
                 args,
@@ -98,12 +101,15 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
                     "ctime": row["ctime"].strftime("%Y-%m-%d %H:%M") if row.get("ctime") else None,
                     "url": row["url"],
                     "rpid": row["rpid"],
+                    "tid": row.get("tid"),
+                    "tname": row.get("tname"),
+                    "tags": row.get("tags"),
                     "mysql_id": row["id"],
                 })
 
             # 从 B 的表取记录
             cur.execute(
-                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid "
+                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid, tid, tname, tags "
                 f"FROM `{table_b}` WHERE rpid IN ({placeholders}) "
                 f"ORDER BY ctime DESC",
                 args,
@@ -119,6 +125,9 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
                     "ctime": row["ctime"].strftime("%Y-%m-%d %H:%M") if row.get("ctime") else None,
                     "url": row["url"],
                     "rpid": row["rpid"],
+                    "tid": row.get("tid"),
+                    "tname": row.get("tname"),
+                    "tags": row.get("tags"),
                     "mysql_id": row["id"],
                 })
     except pymysql.err.ProgrammingError:
@@ -129,48 +138,67 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
 
 
 def _try_resolve_missing_owners(uid):
-    """尝试为该 uid 评论表中 video_owner_uid 为 NULL 的记录补充UP主信息。
+    """尝试为该 uid 评论/弹幕表中缺失视频信息的记录补充 UP主/分区/标签。
     返回新解析的数量。
     """
-    tbl = db.comment_table(uid)
-    conn = db.get_conn()
-    resolved = 0
-    try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            # 取 oid 不重复且 video_owner_uid 为 NULL 的记录
-            cur.execute(
-                f"SELECT DISTINCT id, oid FROM `{tbl}` "
-                f"WHERE video_owner_uid IS NULL AND oid IS NOT NULL LIMIT 50"
-            )
-            rows = cur.fetchall()
-        if not rows:
-            return 0
+    import json
+    
+    total_resolved = 0
+    
+    # 同时处理评论表和弹幕表
+    tables = [db.comment_table(uid), db.danmu_table(uid)]
+    
+    for tbl in tables:
+        conn = db.get_conn()
+        resolved = 0
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                # 取 oid 不重复且 video_owner_uid 或 tid 为 NULL 的记录
+                cur.execute(
+                    f"SELECT DISTINCT id, oid FROM `{tbl}` "
+                    f"WHERE (video_owner_uid IS NULL OR tid IS NULL) AND oid IS NOT NULL LIMIT 50"
+                )
+                rows = cur.fetchall()
+            if not rows:
+                continue
 
-        # 批量解析(利用缓存)
-        oid_owner_map = {}
-        for row in rows:
-            oid = row["oid"]
-            if oid not in oid_owner_map:
-                owner = get_video_owner(oid)
-                oid_owner_map[oid] = owner
-
-        # 回写数据库
-        with conn.cursor() as cur:
+            # 批量解析(利用缓存)
+            oid_info_map = {}
             for row in rows:
-                owner = oid_owner_map.get(row["oid"])
-                if owner is not None:
-                    cur.execute(
-                        f"UPDATE `{tbl}` SET video_owner_uid=%s WHERE id=%s",
-                        (owner, row["id"]),
-                    )
-                    if cur.rowcount:
-                        resolved += 1
-        conn.commit()
-    except pymysql.err.ProgrammingError:
-        pass
-    finally:
-        conn.close()
-    return resolved
+                oid = row["oid"]
+                if oid not in oid_info_map:
+                    oid_info_map[oid] = get_video_info(oid)
+
+            # 回写数据库
+            with conn.cursor() as cur:
+                for row in rows:
+                    info = oid_info_map.get(row["oid"], {})
+                    owner = info.get("owner_uid")
+                    tid = info.get("tid")
+                    tname = info.get("tname")
+                    tags = info.get("tags")
+                    
+                    # 只要有任何一个字段需要更新就执行
+                    if owner is not None or tid is not None or tname is not None or tags is not None:
+                        cur.execute(
+                            f"UPDATE `{tbl}` SET video_owner_uid=%s, tid=%s, tname=%s, tags=%s WHERE id=%s",
+                            (owner, tid, tname,
+                             json.dumps(tags, ensure_ascii=False) if tags else None,
+                             row["id"]),
+                        )
+                        if cur.rowcount:
+                            resolved += 1
+            conn.commit()
+        except pymysql.err.ProgrammingError:
+            pass
+        finally:
+            conn.close()
+        
+        if resolved > 0:
+            print(f"[resolve] {tbl} 补全了 {resolved} 条记录的视频信息")
+        total_resolved += resolved
+    
+    return total_resolved
 
 
 def find_interactions(uid_a, uid_b, resolve_owners=True):

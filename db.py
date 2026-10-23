@@ -42,12 +42,16 @@ CREATE TABLE IF NOT EXISTS `{table}` (
   source          VARCHAR(50)  DEFAULT NULL COMMENT '数据来源,如 aicu.cc',
   url             VARCHAR(500) DEFAULT NULL COMMENT '直达链接',
   video_owner_uid BIGINT       DEFAULT NULL COMMENT '视频UP主uid(从B站API获取)',
+  tid             INT          DEFAULT NULL COMMENT '视频分区ID',
+  tname           VARCHAR(50)  DEFAULT NULL COMMENT '视频分区名',
+  tags            JSON         DEFAULT NULL COMMENT '视频标签列表',
   raw             JSON         DEFAULT NULL COMMENT '原始字段备份',
   ingested_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_rpid (rpid),
   KEY idx_ctime (ctime),
   KEY idx_oid (oid),
-  KEY idx_owner (video_owner_uid)
+  KEY idx_owner (video_owner_uid),
+  KEY idx_tid (tid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -67,10 +71,14 @@ CREATE TABLE IF NOT EXISTS `{table}` (
   extra        JSON         DEFAULT NULL COMMENT '彩色弹幕参数等额外字段',
   source       VARCHAR(50)  DEFAULT NULL,
   url          VARCHAR(500) DEFAULT NULL COMMENT '传送门链接',
+  tid          INT          DEFAULT NULL COMMENT '视频分区ID',
+  tname        VARCHAR(50)  DEFAULT NULL COMMENT '视频分区名',
+  tags         JSON         DEFAULT NULL COMMENT '视频标签列表',
   ingested_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_dmid (dmid),
   KEY idx_ctime (ctime),
-  KEY idx_oid (oid)
+  KEY idx_oid (oid),
+  KEY idx_tid (tid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -130,22 +138,59 @@ def ensure_tables(uid):
         conn.close()
     # 迁移: 为已有表补充新列
     migrate_comment_table(uid)
+    migrate_danmu_table(uid)
     # 增量入库状态表
     ensure_ingest_state_table()
 
 
+def _add_column_if_missing(conn, tbl, col_name, col_def, index_def=None):
+    """辅助: 为表添加列(若不存在),可选附带索引。"""
+    with conn.cursor() as cur:
+        cur.execute(f"SHOW COLUMNS FROM `{tbl}` LIKE %s", (col_name,))
+        if not cur.fetchone():
+            cur.execute(f"ALTER TABLE `{tbl}` ADD COLUMN {col_name} {col_def}")
+            if index_def:
+                cur.execute(f"ALTER TABLE `{tbl}` ADD {index_def}")
+            print(f"[migrate] {tbl}: 已添加 {col_name} 列")
+
+
 def migrate_comment_table(uid):
-    """为已有评论表添加 video_owner_uid 列(若不存在)。"""
+    """为已有评论表添加缺失列(video_owner_uid, tid, tname, tags)。"""
     tbl = comment_table(uid)
     conn = get_conn()
     try:
-        with conn.cursor() as cur:
-            # 检查列是否存在
-            cur.execute(f"SHOW COLUMNS FROM `{tbl}` LIKE 'video_owner_uid'")
-            if not cur.fetchone():
-                cur.execute(f"ALTER TABLE `{tbl}` ADD COLUMN video_owner_uid BIGINT DEFAULT NULL COMMENT '视频UP主uid'")
-                cur.execute(f"ALTER TABLE `{tbl}` ADD KEY idx_owner (video_owner_uid)")
-                print(f"[migrate] {tbl}: 已添加 video_owner_uid 列")
+        _add_column_if_missing(conn, tbl, "video_owner_uid",
+                               "BIGINT DEFAULT NULL COMMENT '视频UP主uid'",
+                               "KEY idx_owner (video_owner_uid)")
+        _add_column_if_missing(conn, tbl, "tid",
+                               "INT DEFAULT NULL COMMENT '视频分区ID'",
+                               "KEY idx_tid (tid)")
+        _add_column_if_missing(conn, tbl, "tname",
+                               "VARCHAR(50) DEFAULT NULL COMMENT '视频分区名'")
+        _add_column_if_missing(conn, tbl, "tags",
+                               "JSON DEFAULT NULL COMMENT '视频标签列表'")
+        conn.commit()
+    except pymysql.err.ProgrammingError:
+        pass  # 表不存在,跳过
+    finally:
+        conn.close()
+
+
+def migrate_danmu_table(uid):
+    """为已有弹幕表添加缺失列(video_owner_uid, tid, tname, tags)。"""
+    tbl = danmu_table(uid)
+    conn = get_conn()
+    try:
+        _add_column_if_missing(conn, tbl, "video_owner_uid",
+                               "BIGINT DEFAULT NULL COMMENT '视频UP主uid'",
+                               "KEY idx_owner (video_owner_uid)")
+        _add_column_if_missing(conn, tbl, "tid",
+                               "INT DEFAULT NULL COMMENT '视频分区ID'",
+                               "KEY idx_tid (tid)")
+        _add_column_if_missing(conn, tbl, "tname",
+                               "VARCHAR(50) DEFAULT NULL COMMENT '视频分区名'")
+        _add_column_if_missing(conn, tbl, "tags",
+                               "JSON DEFAULT NULL COMMENT '视频标签列表'")
         conn.commit()
     except pymysql.err.ProgrammingError:
         pass  # 表不存在,跳过

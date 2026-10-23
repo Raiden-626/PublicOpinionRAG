@@ -85,100 +85,112 @@ def _is_data_card(card):
     return True
 
 
-# ---- B站API: 获取视频UP主 ----
-_video_owner_cache = {}
+# ---- B站API: 获取视频信息(UP主/分区/标签) ----
+_video_info_cache = {}
 _last_api_call = 0.0
 
 
-def get_video_owner(oid):
-    """通过B站API获取视频oid的UP主uid。结果缓存。失败返回None。
-    自带限流: 两次请求间至少间隔 0.3s,遇到 -412/超时自动重试最多 2 次。
-    """
+def _api_rate_limit():
+    """API 限流: 两次请求间至少间隔 0.3s。"""
     global _last_api_call
-    if oid is None:
-        return None
-    if oid in _video_owner_cache:
-        return _video_owner_cache[oid]
+    elapsed = time.time() - _last_api_call
+    if elapsed < 0.3:
+        time.sleep(0.3 - elapsed)
+    _last_api_call = time.time()
 
-    import requests, time
 
-    for attempt in range(3):
-        # 限流: 保证两次请求间至少有间隔
-        elapsed = time.time() - _last_api_call
-        if elapsed < 0.3:
-            time.sleep(0.3 - elapsed)
-        _last_api_call = time.time()
-
+def _api_get(url):
+    """带防护的 GET 请求。返回解析后的 dict,失败返回 None。"""
+    _api_rate_limit()
+    try:
+        import requests
+        resp = requests.get(url, headers={"User-Agent": _UA}, timeout=10)
+        if resp.status_code != 200:
+            return None, f"HTTP {resp.status_code}"
+        ct = resp.headers.get("Content-Type", "")
+        if "json" not in ct and "javascript" not in ct:
+            return None, f"非JSON响应(Content-Type={ct})"
         try:
-            resp = requests.get(
-                f"https://api.bilibili.com/x/web-interface/view?aid={oid}",
-                headers={"User-Agent": _UA},
-                timeout=10,
-            )
-            # 先检查 HTTP 状态码
-            if resp.status_code != 200:
-                print(f"[api] oid={oid} HTTP {resp.status_code}, 不重试")
-                break
-            # 检查 Content-Type,防止空响应或 HTML 错误页
-            ct = resp.headers.get("Content-Type", "")
-            if "json" not in ct and "javascript" not in ct:
-                body_preview = resp.text[:100] if resp.text else "(空)"
-                print(f"[api] oid={oid} 响应非JSON(Content-Type={ct}), 内容: {body_preview}")
-                break
-            # 解析 JSON
-            try:
-                data = resp.json()
-            except Exception:
-                print(f"[api] oid={oid} JSON解析失败, 内容: {resp.text[:100]}")
-                break
-            code = data.get("code")
-            if code == 0:
-                owner_uid = data["data"]["owner"]["mid"]
-                _video_owner_cache[oid] = owner_uid
-                return owner_uid
-            if code == -412:
-                # 风控拦截,等待后重试
-                wait = 2 * (attempt + 1)
-                print(f"[api] oid={oid} 触发风控, {wait}s 后重试({attempt+1}/3)")
-                time.sleep(wait)
-                continue
-            # 其他业务错误码(-404 视频不存在 等),不重试
-            print(f"[api] oid={oid} 业务错误 code={code}")
-            break
-        except requests.exceptions.Timeout:
-            if attempt < 2:
-                wait = 2 * (attempt + 1)
-                print(f"[api] oid={oid} 请求超时, {wait}s 后重试({attempt+1}/3)")
-                time.sleep(wait)
-            else:
-                print(f"[api] 获取视频oid={oid}的UP主最终失败: 超时")
-        except requests.exceptions.RequestException as e:
-            if attempt < 2:
-                wait = 2 * (attempt + 1)
-                print(f"[api] oid={oid} 网络异常: {e}, {wait}s 后重试({attempt+1}/3)")
-                time.sleep(wait)
-            else:
-                print(f"[api] 获取视频oid={oid}的UP主最终失败: {e}")
-
-    _video_owner_cache[oid] = None
-    return None
+            data = resp.json()
+        except Exception:
+            return None, "JSON解析失败"
+        if data.get("code") == 0:
+            return data.get("data"), None
+        return None, f"业务错误 code={data.get('code')}"
+    except Exception as e:
+        return None, str(e)
 
 
-def resolve_video_owners(records):
-    """批量解析评论记录的video_owner_uid(带缓存,相同oid只请求一次)。"""
+def get_video_info(oid):
+    """获取视频完整信息: owner_uid, tid, tname, tags。结果缓存。
+
+    返回 dict: {"owner_uid": int|None, "tid": int|None, "tname": str|None, "tags": list|None}
+    失败时所有字段为 None。
+    """
+    if oid is None:
+        return {"owner_uid": None, "tid": None, "tname": None, "tags": None}
+    if oid in _video_info_cache:
+        return _video_info_cache[oid]
+
+    # 1) 从 view API 获取 owner_uid, tid, tname
+    data, err = _api_get(f"https://api.bilibili.com/x/web-interface/view?aid={oid}")
+    if err:
+        print(f"[api] oid={oid} view失败: {err}")
+        result = {"owner_uid": None, "tid": None, "tname": None, "tags": None}
+        _video_info_cache[oid] = result
+        return result
+
+    owner_uid = data.get("owner", {}).get("mid")
+    tid = data.get("tid")
+    tname = data.get("tname")
+
+    # 2) 从 tags API 获取标签列表
+    tags_data, err = _api_get(f"https://api.bilibili.com/x/tag/archive/tags?aid={oid}")
+    if err:
+        print(f"[api] oid={oid} tags获取失败: {err}")
+        tags = None
+    elif tags_data:
+        tags = [t["tag_name"] for t in tags_data if t.get("tag_name")]
+    else:
+        tags = None
+
+    result = {"owner_uid": owner_uid, "tid": tid, "tname": tname, "tags": tags}
+    _video_info_cache[oid] = result
+    return result
+
+
+def get_video_owner(oid):
+    """获取视频UP主uid(向后兼容的包装函数)。"""
+    return get_video_info(oid).get("owner_uid")
+
+
+def resolve_video_info(records):
+    """批量解析记录的 video_owner_uid, tid, tname, tags(带缓存,相同 oid 只请求一次)。
+    适用于评论和弹幕记录。
+    """
     oids = set()
     for rec in records:
         oid = rec.get("oid")
-        if oid is not None and oid not in _video_owner_cache:
+        if oid is not None and oid not in _video_info_cache:
             oids.add(oid)
     if oids:
-        print(f"[api] 批量查询 {len(oids)} 个视频的UP主...")
+        print(f"[api] 批量查询 {len(oids)} 个视频的信息(UP主/分区/标签)...")
     for oid in oids:
-        get_video_owner(oid)
+        get_video_info(oid)
     # 填充到记录中
     for rec in records:
-        if rec.get("video_owner_uid") is None and rec.get("oid") is not None:
-            rec["video_owner_uid"] = _video_owner_cache.get(rec["oid"])
+        oid = rec.get("oid")
+        if oid is None:
+            continue
+        info = _video_info_cache.get(oid, {})
+        if rec.get("video_owner_uid") is None:
+            rec["video_owner_uid"] = info.get("owner_uid")
+        if rec.get("tid") is None:
+            rec["tid"] = info.get("tid")
+        if rec.get("tname") is None:
+            rec["tname"] = info.get("tname")
+        if rec.get("tags") is None:
+            rec["tags"] = info.get("tags")
 
 
 def parse_comment_card(card, uid):
@@ -220,7 +232,10 @@ def parse_comment_card(card, uid):
         "category": None,
         "source": "aicu.cc",
         "url": url,
-        "video_owner_uid": None,  # 稍后由 resolve_video_owners 批量填充
+        "video_owner_uid": None,  # 稍后由 resolve_video_info 批量填充
+        "tid": None,              # 视频分区ID
+        "tname": None,            # 视频分区名
+        "tags": None,             # 视频标签列表
     }
 
 
@@ -264,6 +279,10 @@ def parse_danmu_card(card, uid):
         "extra": None,
         "source": "aicu.cc",
         "url": url,
+        "video_owner_uid": None,  # 稍后由 resolve_video_info 批量填充
+        "tid": None,              # 视频分区ID
+        "tname": None,            # 视频分区名
+        "tags": None,             # 视频标签列表
     }
 
 
@@ -326,9 +345,9 @@ def _collect_kind(page, kind, uid):
         seen.add(key)
         records.append(rec)
 
-    # 评论类型: 批量解析视频UP主
-    if kind == "comment" and records:
-        resolve_video_owners(records)
+    # 批量解析视频信息(UP主/分区/标签) — 评论和弹幕都需要
+    if records:
+        resolve_video_info(records)
 
     return records, total
 
