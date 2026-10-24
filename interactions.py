@@ -10,6 +10,7 @@
 import pymysql
 
 import db
+import similarity
 from ingest import get_video_info
 
 
@@ -216,6 +217,7 @@ def find_interactions(uid_a, uid_b, resolve_owners=True):
         "b_to_a": [...],  # B→A 的互动
         "summary": {...}, # 统计摘要
         "resolved_owners": int,  # 新解析的UP主数量
+        "similarity": {...}, # 兴趣相似度与关注点对比
       }
     """
     uid_a, uid_b = int(uid_a), int(uid_b)
@@ -299,6 +301,9 @@ def find_interactions(uid_a, uid_b, resolve_owners=True):
         "total": len(a_to_b) + len(b_to_a),
     }
 
+    # 兴趣相似度与关注点对比(基于标签向量余弦相似度)
+    sim = similarity.compare(uid_a, uid_b)
+
     return {
         "uid_a": uid_a,
         "uid_b": uid_b,
@@ -306,6 +311,7 @@ def find_interactions(uid_a, uid_b, resolve_owners=True):
         "b_to_a": b_to_a,
         "summary": summary,
         "resolved_owners": resolved,
+        "similarity": sim,
     }
 
 
@@ -317,12 +323,27 @@ if __name__ == "__main__":
     ua, ub = int(sys.argv[1]), int(sys.argv[2])
     result = find_interactions(ua, ub)
     s = result["summary"]
-    print(f"\n=== UID {ua} ↔ UID {ub} 互动分析 ===")
+    print(f"\n=== UID {ua} -> UID {ub} 互动分析 ===")
     print(f"A→B: {s['a_to_b_total']} 条 (在视频下评论: {s['a_on_b_video']}, 同楼互动: {s['a_same_thread']})")
     print(f"B→A: {s['b_to_a_total']} 条 (在视频下评论: {s['b_on_a_video']}, 同楼互动: {s['b_same_thread']})")
     print(f"总计: {s['total']} 条互动")
     if result["resolved_owners"]:
         print(f"(新解析了 {result['resolved_owners']} 条视频的UP主)")
+
+    sim = result.get("similarity") or {}
+    if sim.get("score") is not None:
+        print(f"兴趣相似度: {sim['score'] * 100:.1f}% ({sim.get('level')}) "
+              f"[有效样本 A={sim.get('sample_a')} B={sim.get('sample_b')}]")
+        if sim.get("shared_tags"):
+            shared = "、".join(
+                f"{t['tag']}({t['count_a']}/{t['count_b']})" for t in sim["shared_tags"][:5]
+            )
+            print(f"共同关注点: {shared}")
+    else:
+        print("兴趣相似度: 无法计算")
+    if sim.get("note"):
+        print(f"提示: {sim['note']}")
+
     _TYPE_LABEL = {"on_video": "在视频下评论", "same_thread": "同楼互动"}
     for label, records in [("A→B", result["a_to_b"]), ("B→A", result["b_to_a"])]:
         if records:

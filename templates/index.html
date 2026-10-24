@@ -500,6 +500,92 @@
       margin-top: 4px
     }
 
+    /* 兴趣相似度区块 */
+    .sim-box {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin: 14px 0;
+      background: var(--panel2)
+    }
+
+    .sim-head {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap
+    }
+
+    .sim-score {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--brand)
+    }
+
+    .sim-level {
+      font-size: 12px;
+      color: var(--brand);
+      border: 1px solid #1a7a5a44;
+      border-radius: 999px;
+      padding: 1px 10px
+    }
+
+    .sim-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--border);
+      overflow: hidden;
+      margin: 8px 0 4px
+    }
+
+    .sim-bar>i {
+      display: block;
+      height: 100%;
+      background: var(--brand);
+      border-radius: 3px
+    }
+
+    .sim-sub {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 12px 0 6px;
+      font-weight: 600
+    }
+
+    .sim-cols {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap
+    }
+
+    .sim-col {
+      flex: 1;
+      min-width: 220px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px
+    }
+
+    .sim-col h5 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600
+    }
+
+    .sim-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px
+    }
+
+    .sim-empty {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 4px 0
+    }
+
     /* 来源引用 */
     .sources {
       margin-top: 14px;
@@ -880,7 +966,7 @@
         <button class="card" id="btnInteract">
           <div class="num">功能 5</div>
           <div class="t">用户互动分析</div>
-          <div class="d">输入两个 UID,查看评论/回复互动记录</div>
+          <div class="d">输入两个 UID,查看互动记录、关注点与兴趣相似度</div>
         </button>
       </div>
 
@@ -942,7 +1028,7 @@
       <!-- 互动分析结果面板 -->
       <div class="panel" id="pInteract">
         <div class="panel-hd" onclick="togglePanel('pInteract')">
-          <h3>功能 5 · 用户互动分析 <span class="meta" id="interactMeta"></span></h3>
+          <h3>功能 5 · 互动查询与兴趣相似度 <span class="meta" id="interactMeta"></span></h3>
           <span class="toggle" id="pInteract_toggle">▾</span>
         </div>
         <div class="panel-bd" id="interactBody">
@@ -1462,6 +1548,9 @@
         h += '<div class="note">已实时查询B站API,补充了 ' + data.resolved_owners + ' 条视频的UP主信息</div>';
       }
 
+      // 兴趣相似度与关注点对比
+      h += renderSimilarity(data.similarity, ua, ub);
+
       if (s.total === 0) {
         h += '<div style="text-align:center;color:#999;padding:30px">未找到两个用户之间的互动记录。<br><span style="font-size:12px">提示: 需要先对两个 UID 分别执行"抓取并入库",互动分析才能查到数据。</span></div>';
         $("interactBody").innerHTML = h;
@@ -1478,6 +1567,75 @@
       }
 
       $("interactBody").innerHTML = h;
+    }
+
+    // 兴趣相似度与关注点对比
+    function renderSimilarity(sim, ua, ub) {
+      if (!sim) return '';
+      const hasScore = (sim.score !== null && sim.score !== undefined);
+      const pct = hasScore ? (sim.score * 100) : 0;
+
+      let h = '<div class="sim-box">';
+      h += '<div class="sim-head">';
+      h += '<div class="sim-score">' + (hasScore ? pct.toFixed(1) + '%' : '—') + '</div>';
+      if (sim.level) h += '<div class="sim-level">' + escapeHtml(sim.level) + '</div>';
+      h += '<div class="note" style="margin:0">兴趣相似度(标签向量余弦相似度) · 有效样本 A ' + sim.sample_a + ' 条 / B ' + sim.sample_b + ' 条</div>';
+      h += '</div>';
+
+      if (hasScore) {
+        h += '<div class="sim-bar"><i style="width:' + Math.max(Math.round(pct), 2) + '%"></i></div>';
+      }
+      if (sim.note) {
+        h += '<div class="note">' + escapeHtml(sim.note) + '</div>';
+      }
+
+      // 共同关注点
+      h += '<div class="sim-sub">共同关注点</div>';
+      if (sim.shared_tags && sim.shared_tags.length) {
+        h += '<div class="sim-tags">';
+        for (const t of sim.shared_tags) {
+          h += '<span class="tag cm">' + escapeHtml(t.tag) +
+            ' <span style="opacity:.7">A ' + t.count_a + ' / B ' + t.count_b + '</span></span>';
+        }
+        h += '</div>';
+      } else {
+        h += '<div class="sim-empty">' + (hasScore ? '两人没有共同的标签关注点' : '数据不足,无法对比') + '</div>';
+      }
+
+      // 差异关注点
+      const hasA = sim.distinct_a && sim.distinct_a.length;
+      const hasB = sim.distinct_b && sim.distinct_b.length;
+      if (hasA || hasB) {
+        h += '<div class="sim-sub">差异关注点</div><div class="sim-cols">';
+        h += renderSimCol("仅 UID " + ua + " 关注", sim.distinct_a);
+        h += renderSimCol("仅 UID " + ub + " 关注", sim.distinct_b);
+        h += '</div>';
+      }
+
+      // 共同活跃分区
+      if (sim.tname_shared && sim.tname_shared.length) {
+        h += '<div class="sim-sub">共同活跃分区</div><div class="sim-tags">';
+        for (const p of sim.tname_shared) {
+          h += '<span class="tag cm">' + escapeHtml(p) + '</span>';
+        }
+        h += '</div>';
+      }
+
+      h += '</div>';
+      return h;
+    }
+
+    function renderSimCol(title, items) {
+      let h = '<div class="sim-col"><h5>' + escapeHtml(title) + '</h5>';
+      if (!items || !items.length) {
+        return h + '<div class="sim-empty">无</div></div>';
+      }
+      h += '<div class="sim-tags">';
+      for (const it of items) {
+        h += '<span class="tag">' + escapeHtml(it.tag) +
+          ' <span style="opacity:.7">' + it.count + '条 ' + it.pct + '%</span></span>';
+      }
+      return h + '</div></div>';
     }
 
     function renderInteractionGroup(title, records, commenterUid, targetUid) {
