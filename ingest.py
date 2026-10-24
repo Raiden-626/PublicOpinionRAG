@@ -12,12 +12,14 @@ UI 不翻页)。本模块抓取当前可见的全部卡片。
 CLI(经 main.py):
     python main.py ingest 2 --kinds comment,danmu
 """
+
 import json
 import os
 import re
 import time
 from datetime import datetime
 
+import pymysql
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
@@ -91,11 +93,11 @@ _last_api_call = 0.0
 
 
 def _api_rate_limit():
-    """API 限流: 两次请求间至少间隔 0.3s。"""
+    """API 限流: 两次请求间至少间隔 5.0s。"""
     global _last_api_call
     elapsed = time.time() - _last_api_call
-    if elapsed < 0.3:
-        time.sleep(0.3 - elapsed)
+    if elapsed < 5.0:
+        time.sleep(5.0 - elapsed)
     _last_api_call = time.time()
 
 
@@ -104,6 +106,7 @@ def _api_get(url):
     _api_rate_limit()
     try:
         import requests
+
         resp = requests.get(url, headers={"User-Agent": _UA}, timeout=10)
         if resp.status_code != 200:
             return None, f"HTTP {resp.status_code}"
@@ -144,12 +147,9 @@ def get_video_info(oid):
     tid = data.get("tid")
     tname = data.get("tname")
 
-    # 2) 从 tags API 获取标签列表
+    # 2) 从 tags API 获取标签列表(尽力而为,失败不阻塞)
     tags_data, err = _api_get(f"https://api.bilibili.com/x/tag/archive/tags?aid={oid}")
-    if err:
-        print(f"[api] oid={oid} tags获取失败: {err}")
-        tags = None
-    elif tags_data:
+    if not err and tags_data:
         tags = [t["tag_name"] for t in tags_data if t.get("tag_name")]
     else:
         tags = None
@@ -193,9 +193,123 @@ def resolve_video_info(records):
             rec["tags"] = info.get("tags")
 
 
+def backfill_video_info(uids=None, batch_size=50):
+    """批量补全已有记录中缺失的 tid/tname/tags/video_owner_uid。
+
+    参数:
+      uids: 要处理的 uid 列表,None 则自动扫描所有有数据的 uid
+      batch_size: 每批处理的记录数
+
+    返回 dict: {scanned, updated, skipped, failed}
+    """
+    import json
+    import db
+
+    stats = {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0}
+
+    # 自动发现所有有数据的 uid
+    if uids is None:
+        conn = db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+                    "WHERE TABLE_SCHEMA=%s AND TABLE_NAME LIKE 'bilibili_comment_%%'",
+                    (db.MYSQL["database"],),
+                )
+                uids = []
+                for (tbl,) in cur.fetchall():
+                    uid_str = tbl.replace("bilibili_comment_", "")
+                    if uid_str.isdigit():
+                        uids.append(int(uid_str))
+        finally:
+            conn.close()
+        print(f"[backfill] 发现 {len(uids)} 个用户表")
+
+    for uid in uids:
+        for kind in ("comment", "danmu"):
+            tbl = db.table_for(kind, uid)
+            conn = db.get_conn()
+            try:
+                with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                    # 查找缺失视频信息的记录(按 oid 去重)
+                    cur.execute(
+                        f"SELECT DISTINCT id, oid FROM `{tbl}` "
+                        f"WHERE oid IS NOT NULL AND (tid IS NULL OR tags IS NULL) "
+                        f"LIMIT %s",
+                        (batch_size,),
+                    )
+                    rows = cur.fetchall()
+            except pymysql.err.ProgrammingError:
+                rows = []
+            finally:
+                conn.close()
+
+            if not rows:
+                continue
+
+            print(f"[backfill] {tbl}: 发现 {len(rows)} 条待补全记录")
+            stats["scanned"] += len(rows)
+
+            # 按 oid 去重,逐个查询 API
+            oid_seen = set()
+            updates = []
+            for row in rows:
+                oid = row["oid"]
+                if oid in oid_seen:
+                    stats["skipped"] += 1
+                    continue
+                oid_seen.add(oid)
+                info = get_video_info(oid)
+                if info.get("tid") is not None or info.get("tags") is not None:
+                    updates.append((row["id"], info))
+                else:
+                    stats["failed"] += 1
+
+            # 批量回写
+            if updates:
+                conn = db.get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        for record_id, info in updates:
+                            tags_json = (
+                                json.dumps(info["tags"], ensure_ascii=False)
+                                if info.get("tags")
+                                else None
+                            )
+                            cur.execute(
+                                f"UPDATE `{tbl}` SET "
+                                f"video_owner_uid=COALESCE(video_owner_uid, %s), "
+                                f"tid=%s, tname=%s, tags=%s "
+                                f"WHERE id=%s",
+                                (
+                                    info.get("owner_uid"),
+                                    info.get("tid"),
+                                    info.get("tname"),
+                                    tags_json,
+                                    record_id,
+                                ),
+                            )
+                            if cur.rowcount:
+                                stats["updated"] += 1
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            print(f"[backfill] {tbl}: 更新 {len(updates)} 条")
+
+    print(
+        f"[backfill] 完成: 扫描 {stats['scanned']}, 更新 {stats['updated']}, "
+        f"跳过 {stats['skipped']}, 失败 {stats['failed']}"
+    )
+    return stats
+
+
 def parse_comment_card(card, uid):
     """从一张评论卡提取结构化字段。"""
-    caps = [c.get_text(" ", strip=True) for c in card.select("span.MuiTypography-caption")]
+    caps = [
+        c.get_text(" ", strip=True) for c in card.select("span.MuiTypography-caption")
+    ]
     bodies = [p.get_text(" ", strip=True) for p in card.select("p.MuiTypography-body1")]
     content = bodies[0] if bodies else ""
     # 首个 caption = "时间"; 第二个 = "uid:X 爱来自aicu.cc"
@@ -233,15 +347,17 @@ def parse_comment_card(card, uid):
         "source": "aicu.cc",
         "url": url,
         "video_owner_uid": None,  # 稍后由 resolve_video_info 批量填充
-        "tid": None,              # 视频分区ID
-        "tname": None,            # 视频分区名
-        "tags": None,             # 视频标签列表
+        "tid": None,  # 视频分区ID
+        "tname": None,  # 视频分区名
+        "tags": None,  # 视频标签列表
     }
 
 
 def parse_danmu_card(card, uid):
     """从一张弹幕卡提取结构化字段。"""
-    caps = [c.get_text(" ", strip=True) for c in card.select("span.MuiTypography-caption")]
+    caps = [
+        c.get_text(" ", strip=True) for c in card.select("span.MuiTypography-caption")
+    ]
     bodies = [p.get_text(" ", strip=True) for p in card.select("p.MuiTypography-body1")]
     content = bodies[0] if bodies else ""
     time_cap = caps[0] if caps else ""
@@ -280,9 +396,9 @@ def parse_danmu_card(card, uid):
         "source": "aicu.cc",
         "url": url,
         "video_owner_uid": None,  # 稍后由 resolve_video_info 批量填充
-        "tid": None,              # 视频分区ID
-        "tname": None,            # 视频分区名
-        "tags": None,             # 视频标签列表
+        "tid": None,  # 视频分区ID
+        "tname": None,  # 视频分区名
+        "tags": None,  # 视频标签列表
     }
 
 
@@ -320,12 +436,14 @@ def _collect_kind(page, kind, uid):
     # 尝试滚动加载更多(尽力而为:站点的列表在 window 或内层容器上滚动)
     for _ in range(6):
         page.mouse.wheel(0, 60000)
-        page.evaluate("() => {"
-                      "  let b=null,d=0;"
-                      "  for(const e of document.querySelectorAll('div')){"
-                      "    const x=e.scrollHeight-e.clientHeight; if(x>d){d=x;b=e;}}"
-                      "  if(b){b.scrollTop=b.scrollHeight;}"
-                      "}")
+        page.evaluate(
+            "() => {"
+            "  let b=null,d=0;"
+            "  for(const e of document.querySelectorAll('div')){"
+            "    const x=e.scrollHeight-e.clientHeight; if(x>d){d=x;b=e;}}"
+            "  if(b){b.scrollTop=b.scrollHeight;}"
+            "}"
+        )
         page.wait_for_timeout(900)
 
     html = page.content()
@@ -360,7 +478,9 @@ def scrape_uid(uid, kinds=("comment", "danmu"), headless=True):
     out = {}
     with sync_playwright() as p:
         b = p.chromium.launch(headless=headless)
-        ctx = b.new_context(user_agent=_UA, viewport={"width": 1366, "height": 900}, locale="zh-CN")
+        ctx = b.new_context(
+            user_agent=_UA, viewport={"width": 1366, "height": 900}, locale="zh-CN"
+        )
         page = ctx.new_page()
         for kind in kinds:
             if kind not in PAGES:
@@ -409,7 +529,9 @@ def _sample(rec, kind):
     return d
 
 
-def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, overwrite=False):
+def ingest_uid(
+    uid, kinds=("comment", "danmu"), max_pages=None, headless=True, overwrite=False
+):
     """抓取 + 入 MySQL + 入 Chroma。
 
     增量模式(默认):
@@ -434,7 +556,9 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, o
         print(f"[overwrite] 清空 uid={uid} 的旧数据...")
         mysql_deleted = db.clear_uid_data(uid, kinds=kinds)
         chroma_deleted = vector_store.clear_by_uid(uid)
-        print(f"[overwrite] MySQL 删除 {mysql_deleted} 行, Chroma 删除 {chroma_deleted} 条向量")
+        print(
+            f"[overwrite] MySQL 删除 {mysql_deleted} 行, Chroma 删除 {chroma_deleted} 条向量"
+        )
 
     # 读取增量 watermark(覆盖模式清除后读到 None → 全量)
     watermarks = {}
@@ -457,7 +581,9 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, o
 
         # 增量过滤: 只保留 ctime > watermark 的记录
         if watermark:
-            new_records = [r for r in records if r.get("ctime") and r["ctime"] > watermark]
+            new_records = [
+                r for r in records if r.get("ctime") and r["ctime"] > watermark
+            ]
             skipped = len(records) - len(new_records)
             if skipped:
                 print(f"[{kind}] 增量过滤: 跳过 {skipped} 条旧记录(ctime ≤ watermark)")
@@ -490,6 +616,7 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, o
                 continue
             # Chroma 中没有向量,需要补全(从 MySQL 取全部行做向量化)
             from db import fetch_all_ids, fetch_rows_by_ids
+
             all_ids = fetch_all_ids(kind, uid)
             if not all_ids:
                 print(f"[{kind}] MySQL 中也无数据,跳过")
@@ -519,15 +646,19 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, o
         ids, metas, docs = [], [], []
         for (mysql_id, rec), vec in zip(new_rows, vecs):
             ids.append(f"{kind}_{uid}_{mysql_id}")
-            metas.append({
-                "uid": int(uid),
-                "type": table,
-                "mysql_table": table,
-                "mysql_id": int(mysql_id),
-                "oid": rec.get("oid") or 0,
-            })
+            metas.append(
+                {
+                    "uid": int(uid),
+                    "type": table,
+                    "mysql_table": table,
+                    "mysql_id": int(mysql_id),
+                    "oid": rec.get("oid") or 0,
+                }
+            )
             # 嵌入文本包含日期,帮助时间相关查询匹配
-            ctime_str = rec["ctime"].strftime("%Y-%m-%d") if rec.get("ctime") else "未知时间"
+            ctime_str = (
+                rec["ctime"].strftime("%Y-%m-%d") if rec.get("ctime") else "未知时间"
+            )
             docs.append(f"[{ctime_str}] {rec['content']}")
         vector_store.add(ids=ids, embeddings=vecs, documents=docs, metadatas=metas)
         print(f"[{kind}] 新增 {len(new_rows)} 条入库(MySQL + Chroma)")
@@ -541,6 +672,7 @@ def ingest_uid(uid, kinds=("comment", "danmu"), max_pages=None, headless=True, o
 def _update_watermark(uid, kind, records, old_watermark):
     """将 watermark 推进到本次处理记录中的最大 ctime。"""
     import db
+
     ctimes = [r["ctime"] for r in records if r.get("ctime")]
     if not ctimes:
         return
@@ -555,14 +687,37 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("uid", type=int)
+    ap.add_argument("uid", type=int, nargs="?", help="B站用户uid(backfill模式下可省略)")
     ap.add_argument("--kinds", default="comment,danmu")
     ap.add_argument("--headful", action="store_true")
     ap.add_argument("--no-ingest", action="store_true", help="只抓取落 JSON,不入库")
-    ap.add_argument("--overwrite", action="store_true", help="覆盖模式:清空旧数据后重新入库")
+    ap.add_argument(
+        "--overwrite", action="store_true", help="覆盖模式:清空旧数据后重新入库"
+    )
+    ap.add_argument(
+        "--backfill",
+        action="store_true",
+        help="补全已有记录的 tid/tname/tags(从B站API)",
+    )
     args = ap.parse_args()
-    kinds = tuple(k.strip() for k in args.kinds.split(",") if k.strip())
-    if args.no_ingest:
-        scrape_uid(args.uid, kinds=kinds, headless=not args.headful)
+
+    if args.backfill:
+        # 补全模式: 可指定单个 uid, 或处理全部用户
+        uids = [args.uid] if args.uid else None
+        stats = backfill_video_info(uids=uids)
+        print(
+            f"\n补全完成: 扫描 {stats['scanned']} 条, 更新 {stats['updated']} 条, 跳过 {stats['skipped']} 条, 失败 {stats['failed']} 条"
+        )
     else:
-        ingest_uid(args.uid, kinds=kinds, headless=not args.headful, overwrite=args.overwrite)
+        if not args.uid:
+            ap.error("请提供 uid, 或使用 --backfill 补全已有数据")
+        kinds = tuple(k.strip() for k in args.kinds.split(",") if k.strip())
+        if args.no_ingest:
+            scrape_uid(args.uid, kinds=kinds, headless=not args.headful)
+        else:
+            ingest_uid(
+                args.uid,
+                kinds=kinds,
+                headless=not args.headful,
+                overwrite=args.overwrite,
+            )
