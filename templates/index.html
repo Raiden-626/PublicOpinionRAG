@@ -629,6 +629,183 @@
         display: block;
         overflow-x: auto
       }
+
+      .landing-cards {
+        grid-template-columns: 1fr
+      }
+    }
+
+    /* 首页落地页 */
+    .landing-cards {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+      margin: 40px 0;
+    }
+
+    .landing-card {
+      background: var(--panel);
+      border: 2px solid var(--border);
+      border-radius: 16px;
+      padding: 32px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      box-shadow: var(--shadow);
+    }
+
+    .landing-card:hover {
+      border-color: var(--brand);
+      transform: translateY(-4px);
+      box-shadow: 0 8px 24px rgba(26, 122, 90, 0.15);
+    }
+
+    .lc-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    .lc-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--brand);
+      margin-bottom: 8px;
+    }
+
+    .lc-desc {
+      font-size: 14px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    /* 返回按钮 */
+    .back-btn {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-size: 14px;
+      color: var(--brand);
+      cursor: pointer;
+      margin-bottom: 20px;
+      transition: all 0.15s;
+    }
+
+    .back-btn:hover {
+      background: var(--brand-light);
+      border-color: var(--brand);
+    }
+
+    /* 补全数据视图 */
+    .backfill-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .backfill-panel h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      color: var(--brand);
+    }
+
+    .backfill-desc {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0 0 24px;
+    }
+
+    .backfill-options {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .backfill-option,
+    .backfill-option-manual {
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .backfill-option {
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .backfill-option:hover {
+      border-color: var(--brand);
+      background: var(--brand-light);
+    }
+
+    .bo-icon {
+      font-size: 36px;
+      margin-bottom: 12px;
+    }
+
+    .bo-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+
+    .bo-desc {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .bo-input-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .bo-input-row input {
+      flex: 1;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 14px;
+      font-family: var(--mono);
+    }
+
+    .bo-input-row input:focus {
+      outline: none;
+      border-color: var(--brand);
+    }
+
+    .bo-btn {
+      background: var(--brand);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 16px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+
+    .bo-btn:hover {
+      background: var(--brand2);
+    }
+
+    .bo-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    @media(max-width:680px) {
+      .backfill-options {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -638,126 +815,244 @@
     <h1>B站用户舆情分析</h1>
     <div class="sub">输入 UID → 抓取评论/弹幕 → 分析关注 / 生成报告 / RAG 问答（DeepSeek 流式输出）</div>
 
-    <!-- UID 栏 -->
-    <div class="uid-bar">
-      <label>UID</label>
-      <input id="uid" type="text" inputmode="numeric" placeholder="请输入 UID" autocomplete="off" />
-      <button class="sm-btn" id="statusBtn">查询数据</button>
-      <span class="status" id="status"></span>
-    </div>
-
-    <!-- RAG 问答栏 -->
-    <div class="q-bar">
-      <label>RAG 问答</label>
-      <input id="question" type="text" placeholder="该用户最近在关注什么？" autocomplete="off" />
-      <button class="card primary" id="btnAsk" style="padding:8px 16px" disabled>提问</button>
-    </div>
-
-    <!-- 功能卡片 -->
-    <div class="cards">
-      <button class="card primary" id="btnIngest">
-        <div class="num">功能 1</div>
-        <div class="t">抓取并入库</div>
-        <div class="d">抓取评论+弹幕,存入 MySQL + 向量库</div>
-      </button>
-      <button class="card" id="btnFocus" disabled>
-        <div class="num">功能 2</div>
-        <div class="t">最近在关注什么</div>
-        <div class="d">基于近期评论/弹幕,DeepSeek 归纳关注话题</div>
-      </button>
-      <button class="card" id="btnReport" disabled>
-        <div class="num">功能 3</div>
-        <div class="t">舆情分析报告</div>
-        <div class="d">涉猎方面 + 立场画像 + 行为预测(DeepSeek)</div>
-      </button>
-      <button class="card" id="btnAskCard" disabled onclick="document.getElementById('question').focus()">
-        <div class="num">功能 4</div>
-        <div class="t">语义检索问答</div>
-        <div class="d">向量召回相关评论,DeepSeek 基于原文回答</div>
-      </button>
-      <button class="card" id="btnHistory" disabled>
-        <div class="num">历史</div>
-        <div class="t">刷新历史记录</div>
-        <div class="d">查看该 UID 的生成历史(关注/报告/问答)</div>
-      </button>
-      <button class="card" id="btnInteract">
-        <div class="num">功能 5</div>
-        <div class="t">用户互动分析</div>
-        <div class="d">输入两个 UID,查看评论/回复互动记录</div>
-      </button>
-    </div>
-
-    <!-- 结果面板 -->
-    <div class="panel" id="pIngest">
-      <div class="panel-hd" onclick="togglePanel('pIngest')">
-        <h3>功能 1 · 抓取并入库 <span class="meta" id="ingestMeta"></span></h3>
-        <span class="toggle" id="pIngest_toggle">▾</span>
-      </div>
-      <div class="panel-bd" id="ingestBody"></div>
-    </div>
-
-    <div class="panel" id="pFocus">
-      <div class="panel-hd" onclick="togglePanel('pFocus')">
-        <h3>功能 2 · 最近在关注什么 <span class="meta" id="focusMeta"></span></h3>
-        <span class="toggle" id="pFocus_toggle">▾</span>
-      </div>
-      <div class="panel-bd" id="focusBody"></div>
-    </div>
-
-    <div class="panel" id="pReport">
-      <div class="panel-hd" onclick="togglePanel('pReport')">
-        <h3>功能 3 · 舆情分析报告 <span class="meta" id="reportMeta"></span></h3>
-        <span class="toggle" id="pReport_toggle">▾</span>
-      </div>
-      <div class="panel-bd" id="reportBody"></div>
-    </div>
-
-    <div class="panel" id="pAsk">
-      <div class="panel-hd" onclick="togglePanel('pAsk')">
-        <h3>功能 4 · 语义检索问答 <span class="meta" id="askMeta"></span></h3>
-        <span class="toggle" id="pAsk_toggle">▾</span>
-      </div>
-      <div class="panel-bd" id="askBody"></div>
-    </div>
-
-    <!-- 历史记录面板 -->
-    <div class="panel" id="pHistory">
-      <div class="panel-hd" onclick="togglePanel('pHistory')">
-        <h3>历史记录 <span class="meta" id="historyMeta"></span></h3>
-        <span class="toggle" id="pHistory_toggle">▾</span>
-      </div>
-      <div class="panel-bd" id="historyBody">
-        <div style="text-align:center;color:#999;padding:20px">输入 UID 后点击"刷新历史"查看</div>
+    <!-- 首页视图：两个主选项 -->
+    <div id="landingView">
+      <div class="landing-cards">
+        <button class="landing-card" onclick="showView('query')">
+          <div class="lc-icon">🔍</div>
+          <div class="lc-title">查询数据</div>
+          <div class="lc-desc">抓取评论/弹幕、分析关注、生成报告、RAG 问答、互动分析</div>
+        </button>
+        <button class="landing-card" onclick="showView('backfill')">
+          <div class="lc-icon">🔧</div>
+          <div class="lc-title">补全数据</div>
+          <div class="lc-desc">补全视频信息（分区/标签），从 B站 API 获取缺失数据</div>
+        </button>
       </div>
     </div>
 
-    <!-- 互动分析栏 -->
-    <div class="q-bar" id="interactBar" style="display:none">
-      <label>互动分析</label>
-      <span style="font-size:13px;color:var(--muted)">UID A</span>
-      <input id="uidA" type="text" inputmode="numeric" placeholder="UID A" style="flex:0 0 120px" />
-      <span style="font-size:13px;color:var(--muted)">UID B</span>
-      <input id="uidB" type="text" inputmode="numeric" placeholder="UID B" style="flex:0 0 120px" />
-      <button class="sm-btn" id="btnInteractGo"
-        style="background:var(--brand);color:#fff;border-color:var(--brand)">查询互动</button>
-    </div>
+    <!-- 查询数据视图 -->
+    <div id="queryView" style="display:none">
+      <button class="back-btn" onclick="showView('landing')">← 返回首页</button>
 
-    <!-- 互动分析结果面板 -->
-    <div class="panel" id="pInteract">
-      <div class="panel-hd" onclick="togglePanel('pInteract')">
-        <h3>功能 5 · 用户互动分析 <span class="meta" id="interactMeta"></span></h3>
-        <span class="toggle" id="pInteract_toggle">▾</span>
+      <!-- UID 栏 -->
+      <div class="uid-bar">
+        <label>UID</label>
+        <input id="uid" type="text" inputmode="numeric" placeholder="请输入 UID" autocomplete="off" />
+        <button class="sm-btn" id="statusBtn">查询数据</button>
+        <span class="status" id="status"></span>
       </div>
-      <div class="panel-bd" id="interactBody">
-        <div style="text-align:center;color:#999;padding:20px">输入两个 UID 后点击"查询互动"</div>
+
+      <!-- RAG 问答栏 -->
+      <div class="q-bar">
+        <label>RAG 问答</label>
+        <input id="question" type="text" placeholder="该用户最近在关注什么？" autocomplete="off" />
+        <button class="card primary" id="btnAsk" style="padding:8px 16px" disabled>提问</button>
       </div>
-    </div>
+
+      <!-- 功能卡片 -->
+      <div class="cards">
+        <button class="card primary" id="btnIngest">
+          <div class="num">功能 1</div>
+          <div class="t">抓取并入库</div>
+          <div class="d">抓取评论+弹幕,存入 MySQL + 向量库</div>
+        </button>
+        <button class="card" id="btnFocus" disabled>
+          <div class="num">功能 2</div>
+          <div class="t">最近在关注什么</div>
+          <div class="d">基于近期评论/弹幕,DeepSeek 归纳关注话题</div>
+        </button>
+        <button class="card" id="btnReport" disabled>
+          <div class="num">功能 3</div>
+          <div class="t">舆情分析报告</div>
+          <div class="d">涉猎方面 + 立场画像 + 行为预测(DeepSeek)</div>
+        </button>
+        <button class="card" id="btnAskCard" disabled onclick="document.getElementById('question').focus()">
+          <div class="num">功能 4</div>
+          <div class="t">语义检索问答</div>
+          <div class="d">向量召回相关评论,DeepSeek 基于原文回答</div>
+        </button>
+        <button class="card" id="btnHistory" disabled>
+          <div class="num">历史</div>
+          <div class="t">刷新历史记录</div>
+          <div class="d">查看该 UID 的生成历史(关注/报告/问答)</div>
+        </button>
+        <button class="card" id="btnInteract">
+          <div class="num">功能 5</div>
+          <div class="t">用户互动分析</div>
+          <div class="d">输入两个 UID,查看评论/回复互动记录</div>
+        </button>
+      </div>
+
+      <!-- 结果面板 -->
+      <div class="panel" id="pIngest">
+        <div class="panel-hd" onclick="togglePanel('pIngest')">
+          <h3>功能 1 · 抓取并入库 <span class="meta" id="ingestMeta"></span></h3>
+          <span class="toggle" id="pIngest_toggle">▾</span>
+        </div>
+        <div class="panel-bd" id="ingestBody"></div>
+      </div>
+
+      <div class="panel" id="pFocus">
+        <div class="panel-hd" onclick="togglePanel('pFocus')">
+          <h3>功能 2 · 最近在关注什么 <span class="meta" id="focusMeta"></span></h3>
+          <span class="toggle" id="pFocus_toggle">▾</span>
+        </div>
+        <div class="panel-bd" id="focusBody"></div>
+      </div>
+
+      <div class="panel" id="pReport">
+        <div class="panel-hd" onclick="togglePanel('pReport')">
+          <h3>功能 3 · 舆情分析报告 <span class="meta" id="reportMeta"></span></h3>
+          <span class="toggle" id="pReport_toggle">▾</span>
+        </div>
+        <div class="panel-bd" id="reportBody"></div>
+      </div>
+
+      <div class="panel" id="pAsk">
+        <div class="panel-hd" onclick="togglePanel('pAsk')">
+          <h3>功能 4 · 语义检索问答 <span class="meta" id="askMeta"></span></h3>
+          <span class="toggle" id="pAsk_toggle">▾</span>
+        </div>
+        <div class="panel-bd" id="askBody"></div>
+      </div>
+
+      <!-- 历史记录面板 -->
+      <div class="panel" id="pHistory">
+        <div class="panel-hd" onclick="togglePanel('pHistory')">
+          <h3>历史记录 <span class="meta" id="historyMeta"></span></h3>
+          <span class="toggle" id="pHistory_toggle">▾</span>
+        </div>
+        <div class="panel-bd" id="historyBody">
+          <div style="text-align:center;color:#999;padding:20px">输入 UID 后点击"刷新历史"查看</div>
+        </div>
+      </div>
+
+      <!-- 互动分析栏 -->
+      <div class="q-bar" id="interactBar" style="display:none">
+        <label>互动分析</label>
+        <span style="font-size:13px;color:var(--muted)">UID A</span>
+        <input id="uidA" type="text" inputmode="numeric" placeholder="UID A" style="flex:0 0 120px" />
+        <span style="font-size:13px;color:var(--muted)">UID B</span>
+        <input id="uidB" type="text" inputmode="numeric" placeholder="UID B" style="flex:0 0 120px" />
+        <button class="sm-btn" id="btnInteractGo"
+          style="background:var(--brand);color:#fff;border-color:var(--brand)">查询互动</button>
+      </div>
+
+      <!-- 互动分析结果面板 -->
+      <div class="panel" id="pInteract">
+        <div class="panel-hd" onclick="togglePanel('pInteract')">
+          <h3>功能 5 · 用户互动分析 <span class="meta" id="interactMeta"></span></h3>
+          <span class="toggle" id="pInteract_toggle">▾</span>
+        </div>
+        <div class="panel-bd" id="interactBody">
+          <div style="text-align:center;color:#999;padding:20px">输入两个 UID 后点击"查询互动"</div>
+        </div>
+      </div>
+    </div><!-- end queryView -->
+
+    <!-- 补全数据视图 -->
+    <div id="backfillView" style="display:none">
+      <button class="back-btn" onclick="showView('landing')">← 返回首页</button>
+
+      <div class="backfill-panel">
+        <h2>补全视频信息</h2>
+        <p class="backfill-desc">从 B站 API 获取视频的分区、标签等信息，补全数据库中缺失的记录。</p>
+
+        <div class="backfill-options">
+          <button class="backfill-option" id="btnBackfillAll" onclick="runBackfill('')">
+            <div class="bo-icon">🌐</div>
+            <div class="bo-title">补全所有用户</div>
+            <div class="bo-desc">扫描所有已入库的用户，补全缺失的视频信息</div>
+          </button>
+
+          <div class="backfill-option-manual">
+            <div class="bo-icon">🎯</div>
+            <div class="bo-title">补全指定 UID</div>
+            <div class="bo-desc">输入一个或多个 UID（逗号分隔）</div>
+            <div class="bo-input-row">
+              <input id="backfillUids" type="text" placeholder="例如: xxxx,yyyy " />
+              <button class="bo-btn" id="btnBackfillUids" onclick="runBackfill($('backfillUids').value)">开始补全</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 补全结果面板 -->
+        <div class="panel" id="pBackfill" style="margin-top:20px">
+          <div class="panel-hd">
+            <h3>补全结果 <span class="meta" id="backfillMeta"></span></h3>
+          </div>
+          <div class="panel-bd" id="backfillBody">
+            <div style="text-align:center;color:#999;padding:20px">点击上述按钮开始补全</div>
+          </div>
+        </div>
+      </div>
+    </div><!-- end backfillView -->
   </div>
 
   <script>
     const $ = id => document.getElementById(id);
     const uidVal = () => $("uid").value.trim();
     let hasData = false;  // 当前 UID 是否有数据
+
+    // ---- 视图切换 ----
+    function showView(view) {
+      $('landingView').style.display = view === 'landing' ? 'block' : 'none';
+      $('queryView').style.display = view === 'query' ? 'block' : 'none';
+      $('backfillView').style.display = view === 'backfill' ? 'block' : 'none';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // ---- 补全数据 ----
+    async function runBackfill(uids) {
+      const btnAll = $('btnBackfillAll');
+      const btnUids = $('btnBackfillUids');
+      const meta = $('backfillMeta');
+      const body = $('backfillBody');
+
+      // 禁用按钮
+      btnAll.disabled = true;
+      btnUids.disabled = true;
+      meta.textContent = '正在补全...';
+      body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)">⏳ 正在调用 B站 API 补全数据，请稍候...</div>';
+      showPanel('pBackfill', true);
+
+      try {
+        const resp = await fetch('/api/backfill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uids: uids || '' })
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+          meta.textContent = '❌ 失败';
+          body.innerHTML = `<div class="err" style="padding:16px">${data.error}</div>`;
+        } else {
+          meta.textContent = `扫描 ${data.scanned} | 更新 ${data.updated} | 跳过 ${data.skipped} | 失败 ${data.failed}`;
+          body.innerHTML = `
+            <div style="padding:16px">
+              <div class="cnt-grid">
+                <div class="b"><div class="n">${data.scanned}</div><div class="l">扫描</div></div>
+                <div class="b"><div class="n" style="color:var(--ok)">${data.updated}</div><div class="l">更新</div></div>
+                <div class="b"><div class="n">${data.skipped}</div><div class="l">跳过</div></div>
+                <div class="b"><div class="n" style="color:var(--err)">${data.failed}</div><div class="l">失败</div></div>
+              </div>
+              <div class="note" style="margin-top:12px">
+                ${data.updated > 0 ? '✅ 补全完成！' : '⚠️ 没有需要补全的记录。'}
+                ${data.failed > 0 ? ' 部分记录失败，可能是视频已被删除或隐藏。' : ''}
+              </div>
+            </div>
+          `;
+        }
+      } catch (e) {
+        meta.textContent = '❌ 请求失败';
+        body.innerHTML = `<div class="err" style="padding:16px">请求失败: ${e.message}</div>`;
+      } finally {
+        btnAll.disabled = false;
+        btnUids.disabled = false;
+      }
+    }
 
     // ---- sessionStorage 持久化(刷新不丢失) ----
     const SS_KEY = "bilibili_opinion";

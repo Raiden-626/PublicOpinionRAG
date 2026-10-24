@@ -8,6 +8,7 @@
   5. POST /api/ask     {uid,question} RAG 问答(后台任务+轮询)
   6. GET  /api/task    ?task_id=    轮询任务状态/累积文本
   7. POST /api/re_embed {uid}       补全缺失向量(MySQL→Chroma)
+  8. POST /api/backfill {uids}      补全视频信息(tid/tname/tags)
 
 启动:
   .venv\\Scripts\\python.exe app.py
@@ -17,6 +18,16 @@
 import os
 import threading
 import time
+from pathlib import Path
+
+# 加载 .env 文件(显式指定路径,避免工作目录问题)
+from dotenv import load_dotenv
+env_path = Path(__file__).parent / ".env"
+if env_path.exists():
+    load_dotenv(env_path)
+    print(f"[config] 已加载 .env: {env_path}")
+else:
+    print(f"[config] 警告: .env 文件不存在: {env_path}")
 
 # Playwright 浏览器在项目内,导入 ingest 前设好
 os.environ.setdefault(
@@ -397,6 +408,43 @@ def api_re_embed():
         return _json(results)
     except Exception as e:
         return _json({"error": f"补全向量失败: {str(e)}"}, 500)
+
+
+# ---- 视频信息补全 ----
+
+
+@app.route("/api/backfill", methods=["POST"])
+def api_backfill():
+    """补全缺失的视频信息(tid/tname/tags)。
+    请求体: {"uids": "123,456"} 或 {"uids": ""} 表示全部
+    """
+    data = request.json or {}
+    uids_str = str(data.get("uids", "")).strip()
+
+    if uids_str:
+        # 解析指定的 uid 列表
+        uid_list = []
+        for u in uids_str.split(","):
+            u = u.strip()
+            if u.isdigit():
+                uid_list.append(int(u))
+            elif u:
+                return _json({"error": f"无效的 uid: {u}"}, 400)
+        uids = uid_list if uid_list else None
+    else:
+        uids = None  # 补全所有用户
+
+    try:
+        stats = ingest.backfill_video_info(uids=uids)
+        return _json({
+            "success": True,
+            "scanned": stats["scanned"],
+            "updated": stats["updated"],
+            "skipped": stats["skipped"],
+            "failed": stats["failed"],
+        })
+    except Exception as e:
+        return _json({"error": f"补全失败: {str(e)}"}, 500)
 
 
 # ---- 用户互动分析 ----

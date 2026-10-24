@@ -21,7 +21,10 @@ from datetime import datetime
 
 import pymysql
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+
+load_dotenv()
 
 # ---- 页面配置 ----
 PAGES = {
@@ -93,11 +96,11 @@ _last_api_call = 0.0
 
 
 def _api_rate_limit():
-    """API 限流: 两次请求间至少间隔 5.0s。"""
+    """API 限流: 两次请求间至少间隔 1.2s。"""
     global _last_api_call
     elapsed = time.time() - _last_api_call
-    if elapsed < 5.0:
-        time.sleep(5.0 - elapsed)
+    if elapsed < 1.2:
+        time.sleep(1.2 - elapsed)
     _last_api_call = time.time()
 
 
@@ -105,9 +108,28 @@ def _api_get(url):
     """带防护的 GET 请求。返回解析后的 dict,失败返回 None。"""
     _api_rate_limit()
     try:
+        import os
         import requests
 
-        resp = requests.get(url, headers={"User-Agent": _UA}, timeout=10)
+        headers = {"User-Agent": _UA}
+        
+        # 构建完整 Cookie 头
+        sessdata = os.environ.get("BILI_SESSDATA", "").strip()
+        bili_jct = os.environ.get("BILI_BILI_JCT", "").strip()
+        dedeuserid = os.environ.get("BILI_DEDEUSERID", "").strip()
+        
+        cookies = []
+        if sessdata:
+            cookies.append(f"SESSDATA={sessdata}")
+        if bili_jct:
+            cookies.append(f"bili_jct={bili_jct}")
+        if dedeuserid:
+            cookies.append(f"DedeUserID={dedeuserid}")
+        
+        if cookies:
+            headers["Cookie"] = "; ".join(cookies)
+
+        resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code != 200:
             return None, f"HTTP {resp.status_code}"
         ct = resp.headers.get("Content-Type", "")

@@ -81,40 +81,20 @@ def main():
         print("向量库条数:", vector_store.count())
 
     elif args.cmd == "resolve":
-        import db
-        import interactions
+        import ingest
         
         if args.all:
-            # 获取所有已入库的 uid
-            conn = db.get_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SHOW TABLES LIKE 'bilibili_comment_%'")
-                    tables = [row[0] for row in cur.fetchall()]
-                uids = [int(t.split("_")[-1]) for t in tables if t.split("_")[-1].isdigit()]
-            finally:
-                conn.close()
-            
-            if not uids:
-                print("没有找到任何用户数据表")
-                return
-            
-            print(f"发现 {len(uids)} 个用户: {uids}")
-            for uid in uids:
-                print(f"\n正在补全 uid={uid} ...")
-                resolved = interactions._try_resolve_missing_owners(uid)
-                if resolved == 0:
-                    print(f"  uid={uid} 无需补全或已全部补全")
+            uids = None  # backfill_video_info will auto-discover all uids
         elif args.uid:
-            print(f"正在补全 uid={args.uid} ...")
-            resolved = interactions._try_resolve_missing_owners(args.uid)
-            if resolved == 0:
-                print("无需补全或已全部补全")
-            else:
-                print(f"共补全 {resolved} 条记录")
+            uids = [args.uid]
         else:
             print("请指定 uid 或使用 --all 参数")
             p_res.print_help()
+            return
+        
+        stats = ingest.backfill_video_info(uids=uids)
+        print(f"\n补全完成: 扫描 {stats['scanned']} 条, 更新 {stats['updated']} 条, "
+              f"跳过 {stats['skipped']} 条, 失败 {stats['failed']} 条")
 
 
 if __name__ == "__main__":
