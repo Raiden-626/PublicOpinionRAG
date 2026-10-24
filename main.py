@@ -8,6 +8,9 @@
     python main.py count
     python main.py resolve 2          # 补全 uid=2 的评论/弹幕表中缺失的视频信息
     python main.py resolve --all      # 补全所有 uid 的缺失信息
+    python main.py repair --all       # 用本地映射表离线修复 tname(零 API 请求)
+    python main.py mark-dead --all    # 确认并登记失效视频(稿件不可见/已删除)
+    python main.py clear-dead         # 清除失效视频登记
 """
 import argparse
 
@@ -43,6 +46,18 @@ def main():
     p_rep = sub.add_parser("repair", help="用本地映射表离线修复 tname(不发API请求)")
     p_rep.add_argument("uid", type=int, nargs="?", help="要修复的用户uid")
     p_rep.add_argument("--all", action="store_true", help="修复所有用户")
+
+    p_md = sub.add_parser("mark-dead", help="确认并登记失效视频(稿件不可见/已删除)")
+    p_md.add_argument("uid", type=int, nargs="?", help="要扫描的用户uid")
+    p_md.add_argument("--all", action="store_true", help="扫描所有用户")
+    p_md.add_argument("--limit", type=int, default=None,
+                      help="每个用户最多确认多少个视频(默认不限制)")
+    p_md.add_argument("--write", action="store_true",
+                      help="把解析成功的 tid/tname/tags 写回数据库(顺带补全, 不额外发请求)")
+
+    p_cd = sub.add_parser("clear-dead", help="清除失效视频登记")
+    p_cd.add_argument("uid", type=int, nargs="?",
+                      help="只清除该 uid 登记的; 省略则清除全部")
 
     args = ap.parse_args()
 
@@ -115,6 +130,43 @@ def main():
         stats = ingest.repair_tnames_offline(uids=uids)
         print(f"\n修复完成: 扫描 {stats['scanned']} 条, 更新 {stats['updated']} 条, "
               f"跳过 {stats['skipped']} 条, 未知分区 {stats['unknown_tids']}")
+
+    elif args.cmd == "mark-dead":
+        import ingest
+
+        if args.all:
+            uids = ingest.discover_uids()
+        elif args.uid:
+            uids = [args.uid]
+        else:
+            print("请指定 uid 或使用 --all 参数")
+            p_md.print_help()
+            return
+
+        print(f"[mark-dead] 待扫描用户 {len(uids)} 个")
+        totals = {"scanned": 0, "dead": 0, "alive": 0, "unknown": 0, "already": 0, "written": 0}
+        for uid in uids:
+            stats = ingest.mark_dead_videos_for_uid(
+                uid, limit=args.limit, write_back=args.write
+            )
+            for k in totals:
+                totals[k] += stats[k]
+            print(f"[mark-dead] uid={uid}: 扫描 {stats['scanned']}, 失效 {stats['dead']}, "
+                  f"存活 {stats['alive']}, 未知 {stats['unknown']}, 已登记 {stats['already']}, "
+                  f"回写 {stats['written']}")
+
+        print(f"\n确认完成: 扫描 {totals['scanned']}, 失效 {totals['dead']}, "
+              f"存活 {totals['alive']}, 未知 {totals['unknown']}, "
+              f"已登记 {totals['already']}, 回写 {totals['written']}")
+        import db
+        print(f"失效视频登记表现有 {len(db.get_dead_oids())} 条")
+
+    elif args.cmd == "clear-dead":
+        import db
+
+        deleted = db.clear_dead_videos(args.uid)
+        scope = "全部" if args.uid is None else f"uid={args.uid}"
+        print(f"已清除{scope}的失效视频登记 {deleted} 条")
 
 
 if __name__ == "__main__":

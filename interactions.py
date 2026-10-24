@@ -9,9 +9,10 @@
 
 import pymysql
 
+import config
 import db
 import similarity
-from ingest import get_video_info
+from ingest import get_video_info, dead_oids
 
 
 def _query_interactions_from_table(table, commenter_uid, target_uid):
@@ -141,25 +142,40 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
 def _try_resolve_missing_owners(uid):
     """尝试为该 uid 评论/弹幕表中缺失视频信息的记录补充 UP主/分区/标签。
     返回新解析的数量。
+
+    已确认失效的视频(稿件不可见/已删除)会被跳过, 不再请求 B站 API。
     """
     import json
-    
+
     total_resolved = 0
-    
+
+    # 已确认失效的视频: 开关开启时才会跳过
+    dead = dead_oids() if config.SKIP_DEAD_VIDEOS else set()
+
     # 同时处理评论表和弹幕表
     tables = [db.comment_table(uid), db.danmu_table(uid)]
-    
+
     for tbl in tables:
         conn = db.get_conn()
         resolved = 0
         try:
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
-                # 取 oid 不重复且 video_owner_uid 或 tid 为 NULL 的记录
-                cur.execute(
-                    f"SELECT DISTINCT id, oid FROM `{tbl}` "
-                    f"WHERE (video_owner_uid IS NULL OR tid IS NULL) AND oid IS NOT NULL LIMIT 50"
-                )
+                if tbl == db.danmu_table(uid):
+                    # 弹幕表的 video_owner_uid 不参与互动匹配, 只补 tid/tname/tags
+                    cur.execute(
+                        f"SELECT DISTINCT id, oid FROM `{tbl}` "
+                        f"WHERE tid IS NULL AND oid IS NOT NULL LIMIT 50"
+                    )
+                else:
+                    # 取 oid 不重复且 video_owner_uid 或 tid 为 NULL 的记录
+                    cur.execute(
+                        f"SELECT DISTINCT id, oid FROM `{tbl}` "
+                        f"WHERE (video_owner_uid IS NULL OR tid IS NULL) AND oid IS NOT NULL LIMIT 50"
+                    )
                 rows = cur.fetchall()
+            # 失效视频直接排除, 不再发请求也不回写
+            if dead:
+                rows = [r for r in rows if r["oid"] not in dead]
             if not rows:
                 continue
 

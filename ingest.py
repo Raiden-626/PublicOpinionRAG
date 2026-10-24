@@ -26,6 +26,8 @@ from playwright.sync_api import sync_playwright
 
 from zones import zone_name
 
+import config
+
 load_dotenv()
 
 # ---- 页面配置 ----
@@ -98,6 +100,54 @@ _video_info_failed = {}   # oid -> (失败时间, 结果dict, 原因): 失败不
 _FAIL_COOLDOWN = 60       # 失败后多久允许重试(秒)
 _last_api_call = 0.0
 
+# B站 view 接口拿不到分区信息的业务错误码:
+#   62002 稿件不可见 / -404 啥都木有 / -403 无权访问 / 62004 分段播放
+#   62012 视频本身还在(标题可见), 但接口不返回分区信息(充电专属/粉丝可见等)
+# 这些视频再请求也拿不到 tid/tname/tags, 可以永久跳过。
+_GONE_CODES = {62002, -404, -403, 62004, 62012}
+
+# 失效视频集合缓存(避免每次都查库)
+_dead_cache = {"oids": set(), "ts": 0.0}
+_DEAD_CACHE_TTL = 60      # 失效列表缓存时长(秒)
+
+
+def _parse_api_error(err):
+    """从错误串里解析 B站业务错误码与消息。返回 (code|None, message)。"""
+    if not err:
+        return None, None
+    m = re.search(r"code=(-?\d+)\s*(.*)$", err)
+    if m:
+        return int(m.group(1)), m.group(2).strip()
+    return None, err
+
+
+def dead_oids(force_refresh=False):
+    """返回已确认失效的视频 oid 集合(带 TTL 缓存, 开关关闭时返回空集合)。"""
+    if not config.SKIP_DEAD_VIDEOS:
+        return set()
+    now = time.time()
+    if force_refresh or now - _dead_cache["ts"] > _DEAD_CACHE_TTL:
+        try:
+            import db
+            db.ensure_dead_video_table()
+            _dead_cache["oids"] = db.get_dead_oids()
+        except Exception as e:
+            print(f"[dead] 读取失效视频列表失败: {e}")
+        _dead_cache["ts"] = now
+    return _dead_cache["oids"]
+
+
+def mark_dead_video(oid, reason, uid=None, kind=None):
+    """把失效视频记入 dead_video 表, 之后不再向 B站 请求它。"""
+    try:
+        import db
+        db.mark_dead_videos([(oid, uid, kind, reason)])
+        _dead_cache["oids"].add(oid)
+        _dead_cache["ts"] = time.time()
+        print(f"[dead] oid={oid} 已标记失效({reason}),后续不再请求")
+    except Exception as e:
+        print(f"[dead] 标记 oid={oid} 失败: {e}")
+
 
 def _api_rate_limit():
     """API 限流: 两次请求间至少间隔 1.2s。"""
@@ -145,19 +195,32 @@ def _api_get(url):
             return None, "JSON解析失败"
         if data.get("code") == 0:
             return data.get("data"), None
-        return None, f"业务错误 code={data.get('code')}"
+        return None, f"业务错误 code={data.get('code')} {data.get('message') or ''}".strip()
     except Exception as e:
         return None, str(e)
 
 
-def get_video_info(oid):
+def get_video_info(oid, skip_dead=None, mark_dead=None):
     """获取视频完整信息: owner_uid, tid, tname, tags。结果缓存。
 
     返回 dict: {"owner_uid": int|None, "tid": int|None, "tname": str|None, "tags": list|None}
     失败时所有字段为 None。
+
+    skip_dead: 是否跳过已确认失效的视频(默认跟随 config.SKIP_DEAD_VIDEOS 开关)。
+    mark_dead: 是否把确认失效的视频登记进 dead_video 表(默认跟随开关)。
     """
     if oid is None:
         return {"owner_uid": None, "tid": None, "tname": None, "tags": None}
+
+    # 已确认失效的视频(稿件不可见/已删除)不再请求 B站
+    if skip_dead is None:
+        skip_dead = config.SKIP_DEAD_VIDEOS
+    if skip_dead and oid in dead_oids():
+        return {"owner_uid": None, "tid": None, "tname": None, "tags": None}
+
+    if mark_dead is None:
+        mark_dead = config.SKIP_DEAD_VIDEOS
+
     if oid in _video_info_cache:
         return _video_info_cache[oid]
 
@@ -172,6 +235,10 @@ def get_video_info(oid):
         print(f"[api] oid={oid} view失败: {err}")
         result = {"owner_uid": None, "tid": None, "tname": None, "tags": None}
         _video_info_failed[oid] = (time.time(), result, err)
+        # 稿件不可见/已删除 -> 永久失效, 记入 dead_video 表
+        code, message = _parse_api_error(err)
+        if mark_dead and code in _GONE_CODES:
+            mark_dead_video(oid, f"code={code} {message}".strip())
         return result
     _video_info_failed.pop(oid, None)
 
@@ -262,13 +329,21 @@ def backfill_video_info(uids=None, batch_size=50):
     for uid in uids:
         for kind in ("comment", "danmu"):
             tbl = db.table_for(kind, uid)
+            # 已确认失效的视频不再请求(开关关闭时 dead 为空集, 行为不变)
+            dead = dead_oids()
+            dead_sql = (
+                "AND NOT EXISTS (SELECT 1 FROM `dead_video` d WHERE d.oid = c.oid) "
+                if config.SKIP_DEAD_VIDEOS
+                else ""
+            )
             conn = db.get_conn()
             try:
                 with conn.cursor(pymysql.cursors.DictCursor) as cur:
                     # 查找缺失视频信息的记录(按 oid 去重)
                     cur.execute(
-                        f"SELECT DISTINCT id, oid FROM `{tbl}` "
-                        f"WHERE oid IS NOT NULL AND (tid IS NULL OR tags IS NULL) "
+                        f"SELECT DISTINCT c.id, c.oid FROM `{tbl}` c "
+                        f"WHERE c.oid IS NOT NULL AND (c.tid IS NULL OR c.tags IS NULL) "
+                        f"{dead_sql}"
                         f"LIMIT %s",
                         (batch_size,),
                     )
@@ -293,6 +368,9 @@ def backfill_video_info(uids=None, batch_size=50):
                     stats["skipped"] += 1
                     continue
                 oid_seen.add(oid)
+                if oid in dead:
+                    stats["skipped"] += 1
+                    continue
                 info = get_video_info(oid)
                 if info.get("tid") is not None or info.get("tags") is not None:
                     updates.append((row["id"], info))
@@ -419,6 +497,142 @@ def repair_tnames_offline(uids=None):
         f"跳过 {stats['skipped']}, 未知分区 {stats['unknown_tids']}"
     )
     return stats
+
+
+def discover_uids():
+    """自动发现库中已有评论数据的 uid 列表。"""
+    import db
+
+    conn = db.get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+                "WHERE TABLE_SCHEMA=%s AND TABLE_NAME LIKE 'bilibili_comment_%%'",
+                (db.MYSQL["database"],),
+            )
+            uids = []
+            for (tbl,) in cur.fetchall():
+                uid_str = tbl.replace("bilibili_comment_", "")
+                if uid_str.isdigit():
+                    uids.append(int(uid_str))
+        return uids
+    finally:
+        conn.close()
+
+
+def mark_dead_videos_for_uid(uid, limit=None, write_back=False):
+    """扫描该 uid 表中 tid 仍为空的视频, 逐个向 B站 确认是否已失效。
+
+    确认失效(稿件不可见/已删除/接口不返回分区信息)的会登记进 dead_video 表, 之后不再请求;
+    视频仍可访问的说明只是之前没解析成功, 不登记, 后续仍可补全。
+
+    write_back=True 时, 把解析成功的 tid/tname/tags 写回数据库(顺带补全, 不额外发请求)。
+
+    返回 dict: {scanned, dead, alive, unknown, already, written}
+    """
+    import db
+
+    stats = {"scanned": 0, "dead": 0, "alive": 0, "unknown": 0, "already": 0, "written": 0}
+
+    already_dead = db.get_dead_oids()
+
+    # 收集待确认的 oid
+    oids = []
+    seen = set()
+    for kind in ("comment", "danmu"):
+        tbl = db.table_for(kind, uid)
+        conn = db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT DISTINCT oid FROM `{tbl}` "
+                    f"WHERE oid IS NOT NULL AND tid IS NULL"
+                )
+                for (oid,) in cur.fetchall():
+                    if oid in seen:
+                        continue
+                    seen.add(oid)
+                    if oid in already_dead:
+                        stats["already"] += 1
+                        continue
+                    oids.append(oid)
+        except pymysql.err.ProgrammingError:
+            pass
+        finally:
+            conn.close()
+
+    if limit:
+        oids = oids[:limit]
+    stats["scanned"] = len(oids)
+    if not oids:
+        return stats
+
+    print(f"[mark-dead] uid={uid}: 逐个确认 {len(oids)} 个视频(约需 {len(oids) * 1.2:.0f} 秒)")
+
+    resolved = {}   # oid -> info(用于回写)
+    for oid in oids:
+        # 强制请求一次并登记: 即使已登记失效也要重新确认
+        info = get_video_info(oid, skip_dead=False, mark_dead=True)
+        if info.get("tid") is not None:
+            stats["alive"] += 1
+            resolved[oid] = info
+            continue
+        failed = _video_info_failed.get(oid)
+        code = _parse_api_error(failed[2])[0] if failed else None
+        if code in _GONE_CODES:
+            stats["dead"] += 1
+        else:
+            stats["unknown"] += 1
+
+    if write_back and resolved:
+        stats["written"] = _write_back_video_info(uid, resolved)
+
+    return stats
+
+
+def _write_back_video_info(uid, resolved):
+    """把已解析的视频信息写回该 uid 的评论/弹幕表。返回更新行数。"""
+    import json
+
+    import db
+
+    updated = 0
+    for kind in ("comment", "danmu"):
+        tbl = db.table_for(kind, uid)
+        # 弹幕表没有 video_owner_uid 列
+        if kind == "comment":
+            set_sql = ("video_owner_uid=COALESCE(video_owner_uid, %s), "
+                       "tid=%s, tname=%s, tags=COALESCE(tags, %s)")
+        else:
+            set_sql = "tid=%s, tname=%s, tags=COALESCE(tags, %s)"
+
+        conn = db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                for oid, info in resolved.items():
+                    tags_json = (
+                        json.dumps(info["tags"], ensure_ascii=False)
+                        if info.get("tags")
+                        else None
+                    )
+                    if kind == "comment":
+                        params = (info.get("owner_uid"), info.get("tid"),
+                                  info.get("tname"), tags_json, oid)
+                    else:
+                        params = (info.get("tid"), info.get("tname"), tags_json, oid)
+                    cur.execute(
+                        f"UPDATE `{tbl}` SET {set_sql} "
+                        f"WHERE oid=%s AND tid IS NULL",
+                        params,
+                    )
+                    updated += cur.rowcount
+            conn.commit()
+        except pymysql.err.ProgrammingError:
+            pass
+        finally:
+            conn.close()
+    return updated
 
 
 def parse_comment_card(card, uid):
@@ -782,7 +996,51 @@ def ingest_uid(
         # 更新 watermark
         _update_watermark(uid, kind, records_to_process, watermark)
 
+    # ---- 失效视频登记 ----
+    # 入库完成后收尾: 把"本次仍拿不到分区信息"的视频 oid 过一遍,
+    # B站 已确认失效(稿件不可见/已删除)的登记进 dead_video 表,
+    # 之后的交互查询与批量补全不再对这些 oid 请求 API。
+    if config.SKIP_DEAD_VIDEOS:
+        _register_dead_videos(uid, kinds, data)
+        print(f"[dead] 失效视频登记表现有 {len(dead_oids())} 条")
+
     return result
+
+
+def _register_dead_videos(uid, kinds, scraped):
+    """入库收尾: 登记本次确认失效的视频。
+
+    只登记 B站 接口明确返回"稿件不可见/已删除"的视频;
+    网络/限流等临时故障不算失效, 后续仍可重试。
+    """
+    import db
+
+    # 收集本次入库里仍为空的 oid -> kind
+    pending = {}
+    for kind in kinds:
+        for rec in (scraped.get(kind) or []):
+            oid = rec.get("oid")
+            if oid is not None and rec.get("tid") is None:
+                pending.setdefault(oid, kind)
+    if not pending:
+        return
+
+    items = []
+    for oid, kind in pending.items():
+        failed = _video_info_failed.get(oid)
+        if not failed:
+            continue  # 本次没失败过(可能是旧数据/重复行), 不擅自判定失效
+        code, message = _parse_api_error(failed[2])
+        if code in _GONE_CODES:
+            items.append((oid, uid, kind, f"code={code} {message}".strip()))
+    if not items:
+        return
+
+    db.mark_dead_videos(items)
+    dead = _dead_cache["oids"]
+    dead.update(item[0] for item in items)
+    _dead_cache["ts"] = time.time()
+    print(f"[dead] uid={uid} 本次登记失效视频 {len(items)} 个")
 
 
 def _update_watermark(uid, kind, records, old_watermark):

@@ -105,6 +105,18 @@ CREATE TABLE IF NOT EXISTS `ingest_state` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+_DEAD_VIDEO_SCHEMA = """
+CREATE TABLE IF NOT EXISTS `dead_video` (
+  oid       BIGINT       NOT NULL COMMENT '视频oid',
+  uid       BIGINT       DEFAULT NULL COMMENT '来源用户uid(可空)',
+  kind      VARCHAR(20)  DEFAULT NULL COMMENT 'comment/danmu(可空)',
+  reason    VARCHAR(100) DEFAULT NULL COMMENT 'B站返回的原因',
+  marked_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (oid),
+  KEY idx_uid (uid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 
 def get_conn():
     return pymysql.connect(**MYSQL, autocommit=False)
@@ -261,6 +273,74 @@ def clear_ingest_state(uid, kind=None):
         conn.commit()
     except pymysql.err.ProgrammingError:
         pass
+    finally:
+        conn.close()
+
+
+# ---- 失效视频标记 ----
+# B站 view 接口对"稿件不可见/已删除"的视频返回 62002 / -404, 这类视频再请求也拿不到分区信息。
+# 标记后写入 dead_video 表, 交互查询与批量补全都会跳过, 省掉无意义的 API 请求。
+
+def ensure_dead_video_table():
+    """创建 dead_video 表(若不存在)。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_DEAD_VIDEO_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_dead_videos(items):
+    """记录失效视频。items: list[(oid, uid, kind, reason)]。返回新增条数(已存在的不重复计)。"""
+    if not items:
+        return 0
+    ensure_dead_video_table()
+    conn = get_conn()
+    added = 0
+    try:
+        with conn.cursor() as cur:
+            for oid, uid, kind, reason in items:
+                cur.execute(
+                    "INSERT IGNORE INTO `dead_video` (oid, uid, kind, reason) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (oid, uid, kind, reason),
+                )
+                added += cur.rowcount
+        conn.commit()
+        return added
+    finally:
+        conn.close()
+
+
+def get_dead_oids():
+    """返回全部失效视频的 oid 集合。表不存在时返回空集合。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT oid FROM `dead_video`")
+            return {row[0] for row in cur.fetchall()}
+    except pymysql.err.ProgrammingError:
+        return set()
+    finally:
+        conn.close()
+
+
+def clear_dead_videos(uid=None):
+    """清除失效标记。uid=None 清除全部,否则只清除该 uid 记录的。返回删除行数。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if uid is None:
+                cur.execute("DELETE FROM `dead_video`")
+            else:
+                cur.execute("DELETE FROM `dead_video` WHERE uid=%s", (uid,))
+            deleted = cur.rowcount
+        conn.commit()
+        return deleted
+    except pymysql.err.ProgrammingError:
+        return 0
     finally:
         conn.close()
 
