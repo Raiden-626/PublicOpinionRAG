@@ -352,7 +352,8 @@ def user_profile(uid):
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
                 try:
                     cur.execute(
-                        f"SELECT tname, tags FROM `{tbl}` WHERE tname IS NOT NULL OR tags IS NOT NULL"
+                        f"SELECT tname, tags FROM `{tbl}` "
+                        f"WHERE (tname IS NOT NULL AND tname <> '') OR tags IS NOT NULL"
                     )
                 except pymysql.err.ProgrammingError:
                     continue
@@ -361,8 +362,8 @@ def user_profile(uid):
             for row in rows:
                 total += 1
                 tname = row.get("tname")
-                if tname:
-                    tname_counter[tname] += 1
+                if tname and tname.strip():
+                    tname_counter[tname.strip()] += 1
                 tags_raw = row.get("tags")
                 if tags_raw:
                     if isinstance(tags_raw, str):

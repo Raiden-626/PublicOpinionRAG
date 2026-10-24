@@ -40,6 +40,10 @@ def main():
     p_res.add_argument("uid", type=int, nargs="?", help="要补全的用户uid")
     p_res.add_argument("--all", action="store_true", help="补全所有用户")
 
+    p_rep = sub.add_parser("repair", help="用本地映射表离线修复 tname(不发API请求)")
+    p_rep.add_argument("uid", type=int, nargs="?", help="要修复的用户uid")
+    p_rep.add_argument("--all", action="store_true", help="修复所有用户")
+
     args = ap.parse_args()
 
     if args.cmd == "initdb":
@@ -95,6 +99,22 @@ def main():
         stats = ingest.backfill_video_info(uids=uids)
         print(f"\n补全完成: 扫描 {stats['scanned']} 条, 更新 {stats['updated']} 条, "
               f"跳过 {stats['skipped']} 条, 失败 {stats['failed']} 条")
+
+    elif args.cmd == "repair":
+        import ingest
+
+        if args.all:
+            uids = None
+        elif args.uid:
+            uids = [args.uid]
+        else:
+            print("请指定 uid 或使用 --all 参数")
+            p_rep.print_help()
+            return
+
+        stats = ingest.repair_tnames_offline(uids=uids)
+        print(f"\n修复完成: 扫描 {stats['scanned']} 条, 更新 {stats['updated']} 条, "
+              f"跳过 {stats['skipped']} 条, 未知分区 {stats['unknown_tids']}")
 
 
 if __name__ == "__main__":

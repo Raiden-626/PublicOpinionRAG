@@ -24,6 +24,8 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
+from zones import zone_name
+
 load_dotenv()
 
 # ---- 页面配置 ----
@@ -91,7 +93,9 @@ def _is_data_card(card):
 
 
 # ---- B站API: 获取视频信息(UP主/分区/标签) ----
-_video_info_cache = {}
+_video_info_cache = {}    # oid -> 成功解析的结果
+_video_info_failed = {}   # oid -> (失败时间, 结果dict, 原因): 失败不入成功缓存, 冷却后可重试
+_FAIL_COOLDOWN = 60       # 失败后多久允许重试(秒)
 _last_api_call = 0.0
 
 
@@ -157,17 +161,24 @@ def get_video_info(oid):
     if oid in _video_info_cache:
         return _video_info_cache[oid]
 
-    # 1) 从 view API 获取 owner_uid, tid, tname
+    # 失败记录带冷却: 冷却期内不重复请求(避免放大限流), 冷却过后再试一次
+    failed = _video_info_failed.get(oid)
+    if failed and time.time() - failed[0] < _FAIL_COOLDOWN:
+        return failed[1]
+
+    # 1) 从 view API 获取 owner_uid, tid (tname 已停发, 见下)
     data, err = _api_get(f"https://api.bilibili.com/x/web-interface/view?aid={oid}")
     if err:
         print(f"[api] oid={oid} view失败: {err}")
         result = {"owner_uid": None, "tid": None, "tname": None, "tags": None}
-        _video_info_cache[oid] = result
+        _video_info_failed[oid] = (time.time(), result, err)
         return result
+    _video_info_failed.pop(oid, None)
 
     owner_uid = data.get("owner", {}).get("mid")
     tid = data.get("tid")
-    tname = data.get("tname")
+    # B站 view 接口已停发 tname/tname_v2(恒为空串), 分区名改由本地映射表给出
+    tname = zone_name(tid, data.get("tname"))
 
     # 2) 从 tags API 获取标签列表(尽力而为,失败不阻塞)
     tags_data, err = _api_get(f"https://api.bilibili.com/x/tag/archive/tags?aid={oid}")
@@ -323,6 +334,89 @@ def backfill_video_info(uids=None, batch_size=50):
     print(
         f"[backfill] 完成: 扫描 {stats['scanned']}, 更新 {stats['updated']}, "
         f"跳过 {stats['skipped']}, 失败 {stats['failed']}"
+    )
+    return stats
+
+
+def repair_tnames_offline(uids=None):
+    """用本地 tid→分区名 映射表离线修复已有记录的 tname(不发任何 B站 API 请求)。
+
+    只处理 tid 已知但 tname 为 NULL/空串的行; tid 未知的行按"原视频已失效"跳过。
+
+    参数:
+      uids: 要处理的 uid 列表,None 则自动扫描所有有数据的 uid
+
+    返回 dict: {scanned, updated, skipped, unknown_tids}
+    """
+    import db
+    from zones import TID_NAMES
+
+    stats = {"scanned": 0, "updated": 0, "skipped": 0, "unknown_tids": []}
+
+    if uids is None:
+        conn = db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+                    "WHERE TABLE_SCHEMA=%s AND TABLE_NAME LIKE 'bilibili_comment_%%'",
+                    (db.MYSQL["database"],),
+                )
+                uids = []
+                for (tbl,) in cur.fetchall():
+                    uid_str = tbl.replace("bilibili_comment_", "")
+                    if uid_str.isdigit():
+                        uids.append(int(uid_str))
+        finally:
+            conn.close()
+        print(f"[repair] 发现 {len(uids)} 个用户表")
+
+    for uid in uids:
+        for kind in ("comment", "danmu"):
+            tbl = db.table_for(kind, uid)
+            conn = db.get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT tid, COUNT(*) FROM `{tbl}` "
+                        f"WHERE tid IS NOT NULL AND (tname IS NULL OR tname='') "
+                        f"GROUP BY tid"
+                    )
+                    groups = cur.fetchall()
+            except pymysql.err.ProgrammingError:
+                groups = []
+            finally:
+                conn.close()
+
+            if not groups:
+                continue
+
+            for tid, cnt in groups:
+                stats["scanned"] += cnt
+                name = TID_NAMES.get(int(tid))
+                if not name:
+                    # 映射表里没有这个分区, 保留空值(可用 zones.py --probe 补)
+                    if int(tid) not in stats["unknown_tids"]:
+                        stats["unknown_tids"].append(int(tid))
+                    stats["skipped"] += cnt
+                    continue
+                conn = db.get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"UPDATE `{tbl}` SET tname=%s "
+                            f"WHERE tid=%s AND (tname IS NULL OR tname='')",
+                            (name, tid),
+                        )
+                        stats["updated"] += cur.rowcount
+                    conn.commit()
+                finally:
+                    conn.close()
+                print(f"[repair] {tbl}: tid={tid} -> {name} ({cnt} 条)")
+
+    print(
+        f"[repair] 完成: 扫描 {stats['scanned']}, 更新 {stats['updated']}, "
+        f"跳过 {stats['skipped']}, 未知分区 {stats['unknown_tids']}"
     )
     return stats
 
@@ -721,9 +815,22 @@ if __name__ == "__main__":
         action="store_true",
         help="补全已有记录的 tid/tname/tags(从B站API)",
     )
+    ap.add_argument(
+        "--repair-tname",
+        action="store_true",
+        help="用本地 tid→分区名映射表离线修复已有记录的 tname(不发API请求)",
+    )
     args = ap.parse_args()
 
-    if args.backfill:
+    if args.repair_tname:
+        # 离线修复模式: 不请求 B站 API
+        uids = [args.uid] if args.uid else None
+        stats = repair_tnames_offline(uids=uids)
+        print(
+            f"\n修复完成: 扫描 {stats['scanned']} 条, 更新 {stats['updated']} 条, "
+            f"跳过 {stats['skipped']} 条, 未知分区 {stats['unknown_tids']}"
+        )
+    elif args.backfill:
         # 补全模式: 可指定单个 uid, 或处理全部用户
         uids = [args.uid] if args.uid else None
         stats = backfill_video_info(uids=uids)
