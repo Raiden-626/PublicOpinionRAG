@@ -224,10 +224,14 @@ def ask_stream(question, uid, top_k=None):
         yield "该用户暂无可检索数据,请先抓取入库。"
         return
 
+    profile_text = _fmt_profile(uid)
+
     user = (
         f"用户问题:{question}\n\n"
-        f"参考片段(按相关度排序):\n{ctx}\n\n"
+        f"参考片段(按相关度排序):\n{ctx}"
+        f"{profile_text}\n\n"
         "请基于以上片段回答。"
+        + (" 可结合上方用户画像统计(分区/标签分布)提供更精准的分析。" if profile_text else "")
     )
 
     # 累积文本并在生成完成后保存历史记录
