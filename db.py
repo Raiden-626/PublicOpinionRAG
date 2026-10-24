@@ -330,6 +330,71 @@ def count_rows(uid):
         conn.close()
 
 
+def user_profile(uid):
+    """用户画像: 按 tname(分区) 和 tags(标签) 聚合评论+弹幕,得到兴趣分布。
+
+    返回 dict:
+      tname_dist: [{"tname": str, "count": int, "pct": float}, ...]  按 count 降序
+      tag_dist:   [{"tag": str, "count": int, "pct": float}, ...]    按 count 降序
+      total:      int  (评论+弹幕总数)
+    """
+    import json as _json
+    from collections import Counter
+
+    tname_counter = Counter()
+    tag_counter = Counter()
+    total = 0
+
+    conn = get_conn()
+    try:
+        for kind in ("comment", "danmu"):
+            tbl = table_for(kind, uid)
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                try:
+                    cur.execute(
+                        f"SELECT tname, tags FROM `{tbl}` WHERE tname IS NOT NULL OR tags IS NOT NULL"
+                    )
+                except pymysql.err.ProgrammingError:
+                    continue
+                rows = cur.fetchall()
+
+            for row in rows:
+                total += 1
+                tname = row.get("tname")
+                if tname:
+                    tname_counter[tname] += 1
+                tags_raw = row.get("tags")
+                if tags_raw:
+                    if isinstance(tags_raw, str):
+                        try:
+                            tags_list = _json.loads(tags_raw)
+                        except Exception:
+                            tags_list = []
+                    elif isinstance(tags_raw, list):
+                        tags_list = tags_raw
+                    else:
+                        tags_list = []
+                    for tag in tags_list:
+                        if isinstance(tag, str) and tag.strip():
+                            tag_counter[tag.strip()] += 1
+    finally:
+        conn.close()
+
+    # 转为排序列表
+    def _to_dist(counter, key_name):
+        items = []
+        for name, cnt in counter.most_common():
+            pct = round(cnt / total * 100, 1) if total else 0
+            items.append({key_name: name, "count": cnt, "pct": pct})
+        return items
+
+    return {
+        "tname_dist": _to_dist(tname_counter, "tname"),
+        "tag_dist": _to_dist(tag_counter, "tag"),
+        "total": total,
+    }
+
+
 # ---- 取样(报告生成用:按时间倒序取若干条)----
 def fetch_sample(kind, uid, limit=200):
     """取该 uid 最近 limit 条(按 ctime 倒序)。返回 list[dict]。"""

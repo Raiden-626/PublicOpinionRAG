@@ -447,6 +447,24 @@ def api_backfill():
         return _json({"error": f"补全失败: {str(e)}"}, 500)
 
 
+# ---- 用户画像 ----
+
+
+@app.route("/api/user_profile")
+def api_user_profile():
+    """获取用户画像: 按分区(tname)和标签(tags)聚合的兴趣分布。"""
+    uid = (request.args.get("uid") or "").strip()
+    if not uid.isdigit():
+        return _json({"error": "uid 必须为数字"}, 400)
+    uid = int(uid)
+    try:
+        profile = db.user_profile(uid)
+        profile["uid"] = uid
+        return _json(profile)
+    except Exception as e:
+        return _json({"error": f"查询失败: {str(e)}"}, 500)
+
+
 # ---- 用户互动分析 ----
 
 

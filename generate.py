@@ -68,6 +68,37 @@ def _truncate_recent(lines, max_chars):
     return "\n".join(parts)
 
 
+def _fmt_profile(uid):
+    """获取并格式化用户画像(分区分布 + 标签分布),供 LLM prompt 使用。
+    返回字符串,如无数据返回空串。
+    """
+    try:
+        profile = db.user_profile(uid)
+    except Exception:
+        return ""
+
+    tname_dist = profile.get("tname_dist", [])
+    tag_dist = profile.get("tag_dist", [])
+    total = profile.get("total", 0)
+
+    if not tname_dist and not tag_dist:
+        return ""
+
+    parts = [f"\n\n【用户画像统计(基于 {total} 条有分区/标签的记录)】"]
+
+    if tname_dist:
+        parts.append("视频分区分布(Top 10):")
+        for item in tname_dist[:10]:
+            parts.append(f"  - {item['tname']}: {item['count']}条 ({item['pct']}%)")
+
+    if tag_dist:
+        parts.append("视频标签分布(Top 15):")
+        for item in tag_dist[:15]:
+            parts.append(f"  - {item['tag']}: {item['count']}条 ({item['pct']}%)")
+
+    return "\n".join(parts)
+
+
 # ---- 流式生成函数 ----
 
 
@@ -86,14 +117,17 @@ def recent_focus_stream(uid, sample_n=200):
     lines = _fmt_rows(comments, "评论") + _fmt_rows(danmu, "弹幕")
     lines = _dedup_rows(lines)
     corpus = _truncate_recent(lines, 4000)
+    profile_text = _fmt_profile(uid)
 
     user = (
         f"以下是B站用户 uid={uid} 最近的 {len(comments)} 条评论与 {len(danmu)} 条弹幕"
-        f"(按时间倒序,已去重并截断至最近内容):\n\n{corpus}\n\n"
+        f"(按时间倒序,已去重并截断至最近内容):\n\n{corpus}"
+        f"{profile_text}\n\n"
         "请归纳该用户【最近在关注的内容】,输出:\n"
         "1) 关注的主要话题/领域(3-6 个,每个带关键词 + 一句简要说明)\n"
         "2) 近期兴趣重心(最突出的 1-2 个方向,说明依据)\n"
         "3) 关注方式特征(偏看弹幕还是爱评论?参与是吐槽/认同/玩梗?若可判断)\n"
+        "请结合上方画像统计数据(分区分布和标签分布)进行更精准的分析。\n"
         "用中文,结构化,基于给定数据,不编造。"
     )
     recent_focus_stream.used = len(comments) + len(danmu)
@@ -134,10 +168,12 @@ def report_stream(uid, sample_n=400):
     lines = _fmt_rows(comments, "评论") + _fmt_rows(danmu, "弹幕")
     lines = _dedup_rows(lines)
     corpus = _truncate_recent(lines, 4500)
+    profile_text = _fmt_profile(uid)
 
     user = (
         f"以下是B站用户 uid={uid} 的 {len(comments)} 条评论与 {len(danmu)} 条弹幕"
-        f"(按时间倒序,已去重):\n\n{corpus}\n\n"
+        f"(按时间倒序,已去重):\n\n{corpus}"
+        f"{profile_text}\n\n"
         "请输出该用户的【舆情分析报告】,必须包含以下四部分:\n"
         "## 一、涉猎的方面\n"
         "该用户参与/关注了哪些领域(如 ACG、科技数码、游戏、影视、时政、生活情感、知识科普等),"
@@ -149,6 +185,7 @@ def report_stream(uid, sample_n=400):
         "行为倾向(如更活跃/趋于沉默/可能引发争议等)。给出 2-4 条预测,每条标注推断依据。\n"
         "## 四、典型依据摘录\n"
         "摘录 3-5 条有代表性的原始内容(带日期),支撑上述判断。\n\n"
+        "请结合上方画像统计数据(分区分布和标签分布)进行更精准的分析。\n"
         "用中文,Markdown 结构化输出,严格基于给定数据,不编造。"
     )
     report_stream.used = len(comments) + len(danmu)
