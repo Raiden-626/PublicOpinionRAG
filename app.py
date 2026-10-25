@@ -594,6 +594,59 @@ def api_clusters():
         return _json({"error": f"查询失败: {str(e)}"}, 500)
 
 
+# ---- 话题传播与关键节点(第三层) ----
+
+
+@app.route("/api/topics")
+def api_topics():
+    """可选话题列表(第三层): 默认只列被 >=2 个库内用户涉及的标签。
+
+    参数:
+      q:     关键词过滤(子串匹配)
+      limit: 返回条数上限(默认 100)
+    """
+    import topic_graph
+
+    keyword = (request.args.get("q") or "").strip()
+    try:
+        limit = int(request.args.get("limit", "100"))
+    except ValueError:
+        limit = 100
+    limit = max(1, min(limit, 500))
+
+    try:
+        items = topic_graph.topic_candidates(keyword=keyword or None, limit=limit)
+        return _json({"topics": items, "total": len(items), "keyword": keyword})
+    except Exception as e:
+        return _json({"error": f"查询失败: {str(e)}"}, 500)
+
+
+@app.route("/api/topic_graph")
+def api_topic_graph():
+    """话题关系图(第三层): 话题 / 视频 / 库内用户 / UP主 四类节点。
+
+    参数:
+      tag:   话题标签(视频标签, 如 "足球")
+      limit: 图里最多保留多少个视频节点(默认 40)
+    """
+    import topic_graph
+
+    tag = (request.args.get("tag") or "").strip()
+    if not tag:
+        return _json({"error": "tag 不能为空"}, 400)
+    try:
+        limit = int(request.args.get("limit", str(topic_graph.MAX_VIDEOS)))
+    except ValueError:
+        limit = topic_graph.MAX_VIDEOS
+    limit = max(1, min(limit, 200))
+
+    try:
+        result = topic_graph.build_graph(tag, max_videos=limit)
+        return _json(result)
+    except Exception as e:
+        return _json({"error": f"查询失败: {str(e)}"}, 500)
+
+
 # ---- 历史记录管理 ----
 
 

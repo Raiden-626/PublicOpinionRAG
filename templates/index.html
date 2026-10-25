@@ -7,6 +7,7 @@
   <title>B站用户舆情分析</title>
   <link rel="icon" href="/static/favicon.ico" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="/static/echarts.min.js"></script>
   <style>
     :root {
       --bg: #f2f7f4;
@@ -970,6 +971,138 @@
       margin-top: 8px
     }
 
+    /* 话题图谱视图(第三层) */
+    .topic-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      gap: 18px;
+      align-items: start
+    }
+
+    .topic-side {
+      display: flex;
+      flex-direction: column;
+      gap: 14px
+    }
+
+    .topic-chart {
+      width: 100%;
+      height: 560px
+    }
+
+    .topic-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 14px;
+      pointer-events: none
+    }
+
+    .topic-empty.hide {
+      display: none
+    }
+
+    .topic-role {
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 8px;
+      background: var(--panel2)
+    }
+
+    .topic-role .tr-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--brand)
+    }
+
+    .topic-role .tr-sub {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px
+    }
+
+    .topic-role .tr-pick {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px
+    }
+
+    .topic-verdict {
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 10px
+    }
+
+    .topic-verdict.circle {
+      background: #e8f5ee;
+      color: var(--brand)
+    }
+
+    .topic-verdict.loose {
+      background: #fef3c7;
+      color: #b45309
+    }
+
+    .topic-verdict.scattered {
+      background: #f1f5f9;
+      color: #475569
+    }
+
+    .topic-kv {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 13px;
+      padding: 4px 0;
+      border-bottom: 1px dashed var(--border)
+    }
+
+    .topic-kv .k {
+      color: var(--muted)
+    }
+
+    .topic-kv .v {
+      font-family: var(--mono);
+      color: var(--text);
+      text-align: right
+    }
+
+    .topic-sample {
+      font-size: 12px;
+      color: var(--text);
+      background: var(--panel2);
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-top: 6px;
+      line-height: 1.5
+    }
+
+    .topic-sample .ts-meta {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 4px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px
+    }
+
+    @media (max-width: 1080px) {
+      .topic-grid {
+        grid-template-columns: minmax(0, 1fr)
+      }
+    }
+
     /* 返回按钮 */
     .back-btn {
       background: var(--panel);
@@ -1124,6 +1257,11 @@
           <div class="lc-icon">📁</div>
           <div class="lc-title">用户记录</div>
           <div class="lc-desc">查看已入库用户的评论、弹幕与历史分析记录</div>
+        </button>
+        <button class="landing-card" onclick="showView('topic')">
+          <div class="lc-icon">🕸️</div>
+          <div class="lc-title">话题图谱</div>
+          <div class="lc-desc">选定一个话题标签，查看话题下的视频、用户与关键节点</div>
         </button>
       </div>
     </div>
@@ -1329,6 +1467,61 @@
         </div>
       </div>
     </div><!-- end recordsView -->
+
+    <!-- 话题图谱视图(第三层: 话题传播与关键节点) -->
+    <div id="topicView" style="display:none">
+      <button class="back-btn" onclick="showView('landing')">← 返回首页</button>
+
+      <div class="q-bar">
+        <label>话题</label>
+        <input id="topicSearch" type="text" placeholder="搜索话题标签，如 足球" autocomplete="off" />
+        <select id="topicSelect"></select>
+        <button class="sm-btn" id="btnTopicGo"
+          style="background:var(--brand);color:#fff;border-color:var(--brand)">生成图谱</button>
+        <span class="status" id="topicStatus"></span>
+      </div>
+
+      <div class="topic-grid">
+        <div class="panel" style="display:block;padding:0;overflow:hidden;margin-bottom:0">
+          <div class="panel-hd" style="padding:14px 18px">
+            <h3>话题图谱 <span class="meta" id="topicGraphMeta"></span></h3>
+          </div>
+          <div style="position:relative">
+            <div id="topicChart" class="topic-chart"></div>
+            <div id="topicEmpty" class="topic-empty">选择左侧话题后点击「生成图谱」</div>
+          </div>
+        </div>
+
+        <div class="topic-side">
+          <div class="panel" id="pTopicVerdict" style="display:block;margin-bottom:0">
+            <div class="panel-hd">
+              <h3>圈子判定</h3>
+            </div>
+            <div class="panel-bd" id="topicVerdictBody">
+              <div style="color:var(--muted);font-size:13px">生成图谱后给出结论</div>
+            </div>
+          </div>
+
+          <div class="panel" id="pTopicRoles" style="display:block;margin-bottom:0">
+            <div class="panel-hd">
+              <h3>关键节点</h3>
+            </div>
+            <div class="panel-bd" id="topicRolesBody">
+              <div style="color:var(--muted);font-size:13px">生产者优先 / 参与者次之</div>
+            </div>
+          </div>
+
+          <div class="panel" id="pTopicDetail" style="display:block;margin-bottom:0">
+            <div class="panel-hd">
+              <h3>节点详情</h3>
+            </div>
+            <div class="panel-bd" id="topicDetailBody">
+              <div style="color:var(--muted);font-size:13px">点击图中的节点查看详情</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div><!-- end topicView -->
   </div>
 
   <!-- 选择两个用户(从用户记录视图跳转到功能5 互动分析) -->
@@ -1362,7 +1555,12 @@
       $('queryView').style.display = view === 'query' ? 'block' : 'none';
       $('backfillView').style.display = view === 'backfill' ? 'block' : 'none';
       $('recordsView').style.display = view === 'records' ? 'block' : 'none';
+      $('topicView').style.display = view === 'topic' ? 'block' : 'none';
       if (view === 'records') { loadRecordUsers(); loadClusters(); }
+      if (view === 'topic') {
+        if (!topicTopicsLoaded) loadTopics();
+        if (topicChart) topicChart.resize();
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -2065,6 +2263,398 @@
       clusterPicked = [];
       applyInteractPair(a, b);
     }
+
+    // ---- 第三层: 话题图谱(话题传播与关键节点) ----
+    // 节点类型: 话题 / 视频 / 用户 / UP主, 顺序与后端 category 字符串一一对应
+    const TOPIC_CATEGORIES = [
+      { name: "话题", itemStyle: { color: "#1a7a5a" } },
+      { name: "视频", itemStyle: { color: "#7fb3a3" } },
+      { name: "用户", itemStyle: { color: "#e07a3f" } },
+      { name: "UP主", itemStyle: { color: "#4f6d8f" } }
+    ];
+
+    let topicTopicsLoaded = false;
+    let topicTopicList = [];
+    let topicChart = null;
+    let topicGraphData = null;
+    let topicPicked = [];
+    let topicNodeIndex = {};
+
+    // 加载话题候选(后端默认只返回跨 >=2 个用户的标签)
+    async function loadTopics() {
+      const sel = $("topicSelect");
+      $("topicStatus").textContent = "正在加载话题列表…";
+      try {
+        const r = await fetch("/api/topics?limit=300");
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "加载失败");
+        topicTopicsLoaded = true;
+        topicTopicList = j.topics || [];
+        renderTopicOptions();
+        $("topicStatus").textContent = "共 " + topicTopicList.length + " 个话题（跨 ≥2 个用户）";
+      } catch (e) {
+        sel.innerHTML = '<option value="">加载失败</option>';
+        $("topicStatus").textContent = "话题列表加载失败: " + e.message;
+      }
+    }
+
+    // 下拉选项(按搜索框做本地过滤, 不重复打接口)
+    function renderTopicOptions() {
+      const sel = $("topicSelect");
+      const kw = $("topicSearch").value.trim();
+      const list = kw
+        ? topicTopicList.filter(t => t.tag.indexOf(kw) >= 0)
+        : topicTopicList;
+      if (!list.length) {
+        sel.innerHTML = '<option value="">没有匹配的话题</option>';
+        return;
+      }
+      let h = '<option value="">请选择话题…</option>';
+      for (const t of list) {
+        h += '<option value="' + escapeHtml(t.tag) + '">' + escapeHtml(t.tag) +
+          '（' + t.users + ' 人 / ' + t.records + ' 条）</option>';
+      }
+      sel.innerHTML = h;
+      // 搜索词正好是某个话题时自动选中
+      if (kw) {
+        const hit = list.find(t => t.tag === kw);
+        if (hit) sel.value = hit.tag;
+      }
+    }
+
+    // 当前要生成图谱的话题: 优先下拉选择, 其次用搜索框输入
+    function currentTopicTag() {
+      const sel = $("topicSelect");
+      return (sel.value || $("topicSearch").value || "").trim();
+    }
+
+    // 生成话题图谱
+    async function loadTopicGraph() {
+      const tag = currentTopicTag();
+      if (!tag) { alert("请选择或输入一个话题标签"); return; }
+      const btn = $("btnTopicGo");
+      const empty = $("topicEmpty");
+      btn.disabled = true;
+      empty.classList.remove("hide");
+      empty.textContent = "正在构建图谱…";
+      $("topicStatus").textContent = "正在构建图谱…";
+      try {
+        const r = await fetch("/api/topic_graph?tag=" + encodeURIComponent(tag));
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "生成失败");
+        topicGraphData = j;
+        topicPicked = [];
+        renderTopicGraph(j);
+        renderTopicVerdict(j);
+        renderTopicRoles(j);
+        $("topicDetailBody").innerHTML =
+          '<div style="color:var(--muted);font-size:13px">点击图中的节点查看详情</div>';
+        $("topicGraphMeta").textContent =
+          (j.nodes || []).length + " 节点 / " + (j.links || []).length + " 连线";
+        $("topicStatus").textContent = j.note || ("话题「" + j.tag + "」");
+        if (!(j.nodes || []).length) {
+          empty.textContent = j.note || "该话题下没有可展示的节点";
+        } else {
+          empty.classList.add("hide");
+        }
+      } catch (e) {
+        empty.textContent = "生成失败: " + e.message;
+        $("topicStatus").textContent = "生成失败: " + e.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ECharts 力导向图
+    function renderTopicGraph(data) {
+      const el = $("topicChart");
+      if (!window.echarts) {
+        $("topicEmpty").textContent = "ECharts 未加载";
+        $("topicEmpty").classList.remove("hide");
+        return;
+      }
+      if (!topicChart) topicChart = echarts.init(el);
+
+      const nodes = (data.nodes || []).map(n => {
+        const idx = TOPIC_CATEGORIES.findIndex(c => c.name === n.category);
+        return {
+          id: n.id,
+          name: n.name,
+          value: n.value,
+          category: idx >= 0 ? idx : 0,
+          symbolSize: n.symbolSize || 20,
+          kind: n.kind,
+          detail: n.detail || {}
+        };
+      });
+      topicNodeIndex = {};
+      for (const n of nodes) topicNodeIndex[n.id] = n;
+
+      const links = (data.links || []).map(l => ({
+        source: l.source,
+        target: l.target,
+        value: l.value,
+        kind: l.kind,
+        lineStyle: {
+          width: Math.min(4, 0.8 + (l.value || 1) * 0.3),
+          curveness: 0.12,
+          opacity: 0.65
+        },
+        label: {
+          show: !!(l.label && l.label.show),
+          formatter: (l.label && l.label.formatter) || l.kind || ""
+        }
+      }));
+
+      topicChart.setOption({
+        tooltip: {
+          confine: true,
+          formatter: function (p) {
+            if (p.dataType === "edge") {
+              return (p.data.kind || "关系") + "　权重 " + (p.data.value || 1);
+            }
+            const n = p.data;
+            const cat = TOPIC_CATEGORIES[n.category] ? TOPIC_CATEGORIES[n.category].name : n.category;
+            let s = "<b>" + escapeHtml(n.name) + "</b><br/>" + escapeHtml(cat) +
+              "<br/>数值 " + (n.value || 0);
+            if (n.kind === "user") {
+              s += "<br/>评论 " + (n.detail.comments || 0) + " 条 / 弹幕 " + (n.detail.danmu || 0) + " 条";
+            } else if (n.kind === "video") {
+              s += "<br/>发言 " + (n.detail.records || 0) + " 条";
+              if (n.detail.tname) s += "<br/>分区 " + escapeHtml(n.detail.tname);
+            } else if (n.kind === "author") {
+              s += "<br/>发布 " + (n.detail.videos || 0) + " 个视频";
+            }
+            return s;
+          }
+        },
+        legend: [{
+          data: TOPIC_CATEGORIES.map(c => c.name),
+          top: 10,
+          left: 12,
+          itemGap: 14,
+          textStyle: { fontSize: 12, color: "#475569" }
+        }],
+        categories: TOPIC_CATEGORIES,
+        series: [{
+          type: "graph",
+          layout: "force",
+          roam: true,
+          draggable: true,
+          categories: TOPIC_CATEGORIES,
+          data: nodes,
+          links: links,
+          force: {
+            repulsion: 360,
+            edgeLength: [75, 190],
+            gravity: 0.06,
+            friction: 0.3
+          },
+          zoom: 0.88,
+          center: null,
+          label: {
+            show: true,
+            position: "right",
+            fontSize: 11,
+            color: "#334155"
+          },
+          lineStyle: { color: "source", curveness: 0.12 },
+          edgeSymbol: ["none", "arrow"],
+          edgeSymbolSize: 6,
+          emphasis: {
+            focus: "adjacency",
+            label: { show: true, fontSize: 12, fontWeight: "bold" }
+          }
+        }]
+      }, true);
+
+      topicChart.off("click");
+      topicChart.on("click", function (p) {
+        if (p.dataType === "edge") return;
+        if (p.data && p.data.id) renderTopicDetail(topicNodeIndex[p.data.id]);
+      });
+    }
+
+    // 圈子判定
+    function renderTopicVerdict(data) {
+      const v = data.verdict || {};
+      const meta = data.meta || {};
+      const kind = v.kind || "scattered";
+      let h = '<div class="topic-verdict ' + kind + '">' + escapeHtml(v.text || "") + '</div>';
+      h += '<div class="topic-kv"><span class="k">参与用户</span><span class="v">' +
+        (v.participants || 0) + ' 人</span></div>';
+      h += '<div class="topic-kv"><span class="k">有直接互动的用户对</span><span class="v">' +
+        (v.interactive_pairs || 0) + ' / ' + (v.possible_pairs || 0) + '</span></div>';
+      h += '<div class="topic-kv"><span class="k">互动占比</span><span class="v">' +
+        ((v.ratio || 0) * 100).toFixed(0) + '%</span></div>';
+      const pairs = v.pairs || [];
+      if (pairs.length) {
+        h += '<div style="margin-top:10px;font-size:12px;color:var(--muted)">互动明细（共现 / 互评 / 同楼）</div>';
+        for (const p of pairs.slice(0, 8)) {
+          h += '<div class="topic-kv"><span class="k">UID ' + p.a + ' <-> ' + p.b +
+            '</span><span class="v">' + p.shared_videos + ' / ' + p.on_video + ' / ' + p.same_thread + '</span></div>';
+        }
+      }
+      h += '<div style="margin-top:10px;font-size:12px;color:var(--muted)">视频 ' +
+        (meta.videos || 0) + ' 个 · 记录 ' + (meta.records || 0) +
+        ' 条 · UP主覆盖 ' + (meta.owner_coverage || 0) + '%</div>';
+      if (data.note) h += '<div class="cc-note">' + escapeHtml(data.note) + '</div>';
+      $("topicVerdictBody").innerHTML = h;
+    }
+
+    // 生产者 / 参与者榜单
+    function renderTopicRoles(data) {
+      const roles = data.roles || {};
+      const producers = roles.producers || [];
+      const parts = roles.participants || [];
+      let h = "";
+
+      h += '<div class="topic-role"><div class="tr-head"><span>生产者</span><span>' +
+        producers.length + ' 人</span></div>';
+      if (!producers.length) {
+        h += '<div class="tr-sub">该话题下没有识别到视频作者</div>';
+      } else {
+        h += '<div class="tr-pick">';
+        for (const p of producers) {
+          const picked = topicPicked.indexOf(p.uid) >= 0 ? " picked" : "";
+          h += '<button class="cluster-chip' + picked + '" title="发布 ' + p.videos +
+            ' 个视频" onclick="pickTopicUser(' + p.uid + ')">UID ' + p.uid + '</button>';
+        }
+        h += '</div>';
+        for (const p of producers) {
+          h += '<div class="tr-sub">UID ' + p.uid + ' · 发布 ' + p.videos + ' 个视频 · 相关记录 ' +
+            p.records + ' 条' + (p.is_tracked ? " · 也在库内" : "") + '</div>';
+        }
+      }
+      h += '</div>';
+
+      h += '<div class="topic-role"><div class="tr-head"><span>参与者</span><span>' +
+        parts.length + ' 人</span></div>';
+      if (!parts.length) {
+        h += '<div class="tr-sub">该话题下没有库内用户的发言记录</div>';
+      } else {
+        h += '<div class="tr-pick">';
+        for (const p of parts) {
+          const picked = topicPicked.indexOf(p.uid) >= 0 ? " picked" : "";
+          h += '<button class="cluster-chip' + picked + '" title="评论 ' + p.comments +
+            ' 条 · 弹幕 ' + p.danmu + ' 条" onclick="pickTopicUser(' + p.uid + ')">UID ' + p.uid + '</button>';
+        }
+        h += '</div>';
+        for (const p of parts) {
+          h += '<div class="tr-sub">UID ' + p.uid + ' · 评论 ' + p.comments + ' 条 / 弹幕 ' +
+            p.danmu + ' 条 · 覆盖 ' + p.videos + ' 个视频' +
+            (p.is_author ? " · 也是UP主" : "") + '</div>';
+        }
+      }
+      h += '</div>';
+
+      if (topicPicked.length === 2) {
+        h += '<div class="cc-action"><span>已选 UID ' + topicPicked[0] + ' 与 UID ' + topicPicked[1] +
+          '</span><button class="sm-btn" onclick="compareTopicPicked()" style="background:var(--brand);color:#fff;border-color:var(--brand)">对比这两人</button></div>';
+      } else if (topicPicked.length === 1) {
+        h += '<div class="cc-action"><span>再选一位即可对比</span></div>';
+      }
+
+      $("topicRolesBody").innerHTML = h;
+    }
+
+    // 选中/取消一个用户(用于跳到功能5 互动分析)
+    function pickTopicUser(uid) {
+      uid = Number(uid);
+      const i = topicPicked.indexOf(uid);
+      if (i >= 0) {
+        topicPicked.splice(i, 1);
+      } else {
+        if (topicPicked.length >= 2) { alert("一次只能对比两个用户, 请先取消一个"); return; }
+        topicPicked.push(uid);
+      }
+      renderTopicRoles(topicGraphData);
+    }
+
+    function compareTopicPicked() {
+      if (topicPicked.length !== 2) { alert("请选择两个用户"); return; }
+      const a = topicPicked[0], b = topicPicked[1];
+      topicPicked = [];
+      applyInteractPair(a, b);
+    }
+
+    // 节点详情
+    function renderTopicDetail(n) {
+      if (!n) return;
+      const d = n.detail || {};
+      const cat = TOPIC_CATEGORIES[n.category] ? TOPIC_CATEGORIES[n.category].name : n.category;
+      let h = '<div class="topic-kv"><span class="k">类型</span><span class="v">' +
+        escapeHtml(cat) + '</span></div>';
+
+      if (n.kind === "topic") {
+        h += '<div class="topic-kv"><span class="k">话题</span><span class="v">' +
+          escapeHtml(n.name) + '</span></div>';
+        h += '<div class="topic-kv"><span class="k">相关记录</span><span class="v">' +
+          (d.records || 0) + ' 条</span></div>';
+        h += '<div class="topic-kv"><span class="k">参与用户</span><span class="v">' +
+          (d.users || 0) + ' 人</span></div>';
+        h += '<div class="topic-kv"><span class="k">相关视频</span><span class="v">' +
+          (d.videos || 0) + ' 个</span></div>';
+      } else if (n.kind === "video") {
+        h += '<div class="topic-kv"><span class="k">视频</span><span class="v">' +
+          escapeHtml(n.name) + '</span></div>';
+        if (d.tname) {
+          h += '<div class="topic-kv"><span class="k">分区</span><span class="v">' +
+            escapeHtml(d.tname) + '</span></div>';
+        }
+        h += '<div class="topic-kv"><span class="k">发言记录</span><span class="v">' +
+          (d.records || 0) + ' 条</span></div>';
+        h += '<div class="topic-kv"><span class="k">参与用户</span><span class="v">' +
+          (d.users || []).length + ' 人</span></div>';
+        if (d.owner) {
+          h += '<div class="topic-kv"><span class="k">UP主</span><span class="v">UID ' +
+            d.owner + '</span></div>';
+        }
+        if (d.url) {
+          h += '<div style="margin-top:8px"><a href="' + escapeHtml(d.url) +
+            '" target="_blank" rel="noopener">在 B 站打开</a></div>';
+        }
+        const samples = d.samples || [];
+        if (samples.length) {
+          h += '<div style="margin-top:10px;font-size:12px;color:var(--muted)">代表性发言</div>';
+          for (const s of samples) {
+            const kindLabel = s.kind === "danmu" ? "弹幕" : "评论";
+            h += '<div class="topic-sample">' + escapeHtml(s.content) +
+              '<div class="ts-meta"><span>UID ' + escapeHtml(s.uid) + ' · ' + kindLabel +
+              '</span><span>' + escapeHtml(s.ctime || "") + '</span></div></div>';
+          }
+        }
+      } else if (n.kind === "user") {
+        h += '<div class="topic-kv"><span class="k">用户</span><span class="v">' +
+          escapeHtml(n.name) + '</span></div>';
+        h += '<div class="topic-kv"><span class="k">本话题记录</span><span class="v">' +
+          (d.records || 0) + ' 条</span></div>';
+        h += '<div class="topic-kv"><span class="k">评论 / 弹幕</span><span class="v">' +
+          (d.comments || 0) + ' / ' + (d.danmu || 0) + '</span></div>';
+        h += '<div class="topic-kv"><span class="k">覆盖视频</span><span class="v">' +
+          (d.videos || 0) + ' 个</span></div>';
+        if (d.is_author) {
+          h += '<div class="topic-kv"><span class="k">发布视频</span><span class="v">' +
+            (d.author_videos || 0) + ' 个</span></div>';
+        }
+        h += '<div style="margin-top:8px"><button class="sm-btn" onclick="pickTopicUser(' +
+          d.uid + ')">加入对比</button></div>';
+      } else if (n.kind === "author") {
+        h += '<div class="topic-kv"><span class="k">UP主</span><span class="v">' +
+          escapeHtml(n.name) + '</span></div>';
+        h += '<div class="topic-kv"><span class="k">本话题发布</span><span class="v">' +
+          (d.videos || 0) + ' 个视频</span></div>';
+        h += '<div class="topic-kv"><span class="k">相关记录</span><span class="v">' +
+          (d.records || 0) + ' 条</span></div>';
+      }
+      $("topicDetailBody").innerHTML = h;
+    }
+
+    $("btnTopicGo").onclick = loadTopicGraph;
+    $("topicSelect").onchange = function () {
+      if (this.value) $("topicSearch").value = this.value;
+    };
+    $("topicSearch").oninput = renderTopicOptions;
 
     // ---- 功能5: 用户互动分析 ----
     $("btnInteract").onclick = () => {
