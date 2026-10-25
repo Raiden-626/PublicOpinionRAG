@@ -563,6 +563,37 @@ def api_records():
         return _json({"error": f"查询失败: {str(e)}"}, 500)
 
 
+# ---- 兴趣群体发现 ----
+
+
+@app.route("/api/clusters")
+def api_clusters():
+    """兴趣群体发现(第二层): 基于标签向量余弦相似度的阈值连通分量聚类。
+
+    参数:
+      threshold: 相似度阈值(默认 0.12)
+      uid:       指定用户时只返回包含他的群体, 并附带其 Top 相似邻居
+    """
+    import clustering
+
+    try:
+        threshold = float(request.args.get("threshold", "") or clustering.DEFAULT_THRESHOLD)
+    except ValueError:
+        threshold = clustering.DEFAULT_THRESHOLD
+    if not (0 < threshold <= 1):
+        return _json({"error": "threshold 必须在 0~1 之间"}, 400)
+
+    uid = (request.args.get("uid") or "").strip()
+    if uid and not uid.isdigit():
+        return _json({"error": "uid 必须为数字"}, 400)
+
+    try:
+        result = clustering.discover(threshold=threshold, uid=int(uid) if uid else None)
+        return _json(result)
+    except Exception as e:
+        return _json({"error": f"查询失败: {str(e)}"}, 500)
+
+
 # ---- 历史记录管理 ----
 
 

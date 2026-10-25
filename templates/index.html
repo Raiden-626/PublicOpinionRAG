@@ -146,6 +146,11 @@
       background: var(--brand-light)
     }
 
+    .sm-btn:disabled {
+      opacity: .5;
+      cursor: not-allowed
+    }
+
     /* 问题栏(RAG 问答) */
     .q-bar {
       display: flex;
@@ -764,6 +769,78 @@
       line-height: 1.5;
     }
 
+    /* 选择两个用户弹窗 */
+    .modal-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 40, 32, .45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px
+    }
+
+    .modal-mask.show {
+      display: flex
+    }
+
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, .18);
+      width: min(460px, 100%);
+      padding: 20px 22px
+    }
+
+    .modal h3 {
+      margin: 0 0 16px;
+      font-size: 15px
+    }
+
+    .modal .m-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px
+    }
+
+    .modal .m-row label {
+      font-size: 13px;
+      color: var(--muted);
+      flex: 0 0 52px
+    }
+
+    .modal select {
+      flex: 1;
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 9px 10px;
+      font-size: 13px;
+      font-family: inherit
+    }
+
+    .modal select:focus {
+      outline: none;
+      border-color: var(--brand)
+    }
+
+    .modal .m-hint {
+      font-size: 12px;
+      color: var(--err);
+      min-height: 18px
+    }
+
+    .modal .m-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 14px
+    }
+
     /* 用户记录视图: 用户卡片网格 */
     .user-grid {
       display: grid;
@@ -812,6 +889,84 @@
       display: flex;
       gap: 6px;
       flex-wrap: wrap
+    }
+
+    /* 兴趣群体: 群体卡片 */
+    .cluster-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 10px
+    }
+
+    .cluster-card .cc-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap
+    }
+
+    .cluster-card .cc-label {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--brand)
+    }
+
+    .cluster-card .cc-tags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px
+    }
+
+    .cluster-card .cc-members {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px
+    }
+
+    .cluster-chip {
+      border: 1px solid var(--border);
+      background: var(--panel2);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 12px;
+      font-family: var(--mono);
+      color: var(--text);
+      cursor: pointer;
+      transition: all 0.15s
+    }
+
+    .cluster-chip:hover {
+      border-color: var(--brand);
+      color: var(--brand)
+    }
+
+    .cluster-chip.picked {
+      background: var(--brand);
+      border-color: var(--brand);
+      color: #fff
+    }
+
+    .cc-action {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--border);
+      font-size: 13px;
+      color: var(--muted)
+    }
+
+    .cc-note {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 8px
     }
 
     /* 返回按钮 */
@@ -1139,7 +1294,18 @@
         <input id="recordUid" type="text" inputmode="numeric" placeholder="直接输入 UID 查看记录" autocomplete="off" />
         <button class="sm-btn" id="btnRecordGo"
           style="background:var(--brand);color:#fff;border-color:var(--brand)">查看记录</button>
+        <button class="sm-btn" id="btnPickUsers">选择用户</button>
         <span class="status" id="recordStatus"></span>
+      </div>
+
+      <div class="panel" id="pRecordClusters">
+        <div class="panel-hd" onclick="togglePanel('pRecordClusters')">
+          <h3>兴趣群体 <span class="meta" id="recordClustersMeta"></span></h3>
+          <span class="toggle" id="pRecordClusters_toggle">▾</span>
+        </div>
+        <div class="panel-bd" id="recordClustersBody">
+          <div style="text-align:center;color:#999;padding:20px">正在发现兴趣群体…</div>
+        </div>
       </div>
 
       <div class="panel" id="pRecordUsers">
@@ -1164,6 +1330,26 @@
     </div><!-- end recordsView -->
   </div>
 
+  <!-- 选择两个用户(从用户记录视图跳转到功能5 互动分析) -->
+  <div class="modal-mask" id="pickMask" onclick="if(event.target===this) closePickUsers()">
+    <div class="modal">
+      <h3>选择两个入库用户</h3>
+      <div class="m-row">
+        <label>用户 A</label>
+        <select id="pickA"></select>
+      </div>
+      <div class="m-row">
+        <label>用户 B</label>
+        <select id="pickB"></select>
+      </div>
+      <div class="m-hint" id="pickHint"></div>
+      <div class="m-actions">
+        <button class="sm-btn" onclick="closePickUsers()">取消</button>
+        <button class="sm-btn" id="btnPickOk" style="background:var(--brand);color:#fff;border-color:var(--brand)">确定</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const $ = id => document.getElementById(id);
     const uidVal = () => $("uid").value.trim();
@@ -1175,7 +1361,7 @@
       $('queryView').style.display = view === 'query' ? 'block' : 'none';
       $('backfillView').style.display = view === 'backfill' ? 'block' : 'none';
       $('recordsView').style.display = view === 'records' ? 'block' : 'none';
-      if (view === 'records') loadRecordUsers();
+      if (view === 'records') { loadRecordUsers(); loadClusters(); }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -1734,6 +1920,151 @@
       if (e.key === "Enter") $("btnRecordGo").click();
     });
 
+    // 触发器: 选择两个入库用户 → 填充功能5 互动分析的 UID A / UID B
+    $("btnPickUsers").onclick = () => {
+      if (recordUsers.length) {
+        fillPickOptions();
+      } else {
+        loadRecordUsers().then(fillPickOptions);
+      }
+    };
+
+    function fillPickOptions() {
+      if (!recordUsers.length) { alert("库里还没有用户数据"); return; }
+      const opts = recordUsers.map(u =>
+        '<option value="' + u.uid + '">UID ' + u.uid +
+        ' · 评论 ' + u.comment_count + ' / 弹幕 ' + u.danmu_count + '</option>'
+      ).join("");
+      const a = $("pickA"), b = $("pickB");
+      a.innerHTML = opts;
+      b.innerHTML = opts;
+      a.selectedIndex = 0;
+      b.selectedIndex = recordUsers.length > 1 ? 1 : 0;
+      $("pickMask").classList.add("show");
+      updatePickHint();
+    }
+
+    function updatePickHint() {
+      const a = $("pickA").value, b = $("pickB").value;
+      const same = !!(a && b && a === b);
+      $("pickHint").textContent = same ? "请选择两个不同的用户" : "";
+      $("btnPickOk").disabled = same || !a || !b;
+    }
+
+    function closePickUsers() {
+      $("pickMask").classList.remove("show");
+    }
+
+    function confirmPickUsers() {
+      const a = $("pickA").value, b = $("pickB").value;
+      if (!a || !b) { alert("请选择两个用户"); return; }
+      if (a === b) { alert("请选择两个不同的用户"); return; }
+      closePickUsers();
+      applyInteractPair(a, b);
+    }
+
+    $("pickA").onchange = updatePickHint;
+    $("pickB").onchange = updatePickHint;
+    $("btnPickOk").onclick = confirmPickUsers;
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape") closePickUsers();
+    });
+
+    // 把两个 UID 填到功能5 互动分析, 并跳到查询数据页
+    function applyInteractPair(a, b) {
+      $("uidA").value = a;
+      $("uidB").value = b;
+      showView("query");
+      $("interactBar").style.display = "flex";
+      $("btnInteract").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    // ---- 兴趣群体(第二层: 群体发现) ----
+    let clusterGroups = [];
+    let clusterPicked = [];
+
+    async function loadClusters() {
+      const bd = $("recordClustersBody");
+      showPanel("pRecordClusters", false);
+      bd.innerHTML = '<div class="loading"><span class="spin"></span>正在发现兴趣群体…</div>';
+      $("recordClustersMeta").textContent = "";
+      try {
+        const r = await fetch("/api/clusters");
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error);
+        clusterGroups = j.groups || [];
+        const pct = Math.round((j.threshold || 0) * 100);
+        $("recordClustersMeta").textContent =
+          (clusterGroups.length ? clusterGroups.length + " 组 · " : "") +
+          "阈值 " + pct + "% · 参与聚类 " + j.user_count + "/" + j.total_users + " 人";
+        renderClusters();
+      } catch (e) {
+        bd.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    function renderClusters() {
+      const bd = $("recordClustersBody");
+      if (!clusterGroups.length) {
+        bd.innerHTML = '<div style="text-align:center;color:#999;padding:20px">当前阈值下没有发现相似群体' +
+          '<br><span style="font-size:12px">再多入库几个用户后可重新发现</span></div>';
+        return;
+      }
+      let h = "";
+      for (const g of clusterGroups) {
+        const kind = g.kind === "group" ? "群体" : "兴趣对";
+        h += '<div class="cluster-card">';
+        h += '<div class="cc-head">';
+        h += '<span class="cc-label">' + escapeHtml(g.label) + '</span>';
+        h += '<span class="tag cm">' + kind + '</span>';
+        h += '<span class="tag">' + g.size + ' 人</span>';
+        h += '<span class="tag">内聚度 ' + (g.cohesion * 100).toFixed(1) + '%</span>';
+        h += '</div>';
+        if (g.top_tags && g.top_tags.length) {
+          h += '<div class="cc-tags">';
+          for (const t of g.top_tags) {
+            h += '<span class="tag">' + escapeHtml(t.tag) + ' ×' + t.members + '</span>';
+          }
+          h += '</div>';
+        }
+        h += '<div class="cc-members">';
+        for (const m of (g.member_details || [])) {
+          const picked = clusterPicked.indexOf(m.uid) >= 0 ? ' picked' : '';
+          h += '<button class="cluster-chip' + picked + '" title="评论 ' + m.comment_count +
+            ' 条 · 弹幕 ' + m.danmu_count + ' 条" onclick="pickClusterMember(' + m.uid + ')">UID ' + m.uid + '</button>';
+        }
+        h += '</div>';
+        if (g.note) h += '<div class="cc-note">' + escapeHtml(g.note) + '</div>';
+        h += '</div>';
+      }
+      if (clusterPicked.length === 2) {
+        h += '<div class="cc-action"><span>已选 UID ' + clusterPicked[0] + ' 与 UID ' + clusterPicked[1] +
+          '</span><button class="sm-btn" onclick="comparePicked()" style="background:var(--brand);color:#fff;border-color:var(--brand)">对比这两人</button></div>';
+      } else if (clusterPicked.length === 1) {
+        h += '<div class="cc-action"><span>再选一位成员即可对比</span></div>';
+      }
+      bd.innerHTML = h;
+    }
+
+    function pickClusterMember(uid) {
+      uid = Number(uid);
+      const i = clusterPicked.indexOf(uid);
+      if (i >= 0) {
+        clusterPicked.splice(i, 1);
+      } else {
+        if (clusterPicked.length >= 2) { alert("一次只能对比两个用户, 请先取消一个"); return; }
+        clusterPicked.push(uid);
+      }
+      renderClusters();
+    }
+
+    function comparePicked() {
+      if (clusterPicked.length !== 2) { alert("请选择两个用户"); return; }
+      const a = clusterPicked[0], b = clusterPicked[1];
+      clusterPicked = [];
+      applyInteractPair(a, b);
+    }
+
     // ---- 功能5: 用户互动分析 ----
     $("btnInteract").onclick = () => {
       const bar = $("interactBar");
@@ -1831,7 +2162,7 @@
       h += '<div class="sim-head">';
       h += '<div class="sim-score">' + (hasScore ? pct.toFixed(1) + '%' : '—') + '</div>';
       if (sim.level) h += '<div class="sim-level">' + escapeHtml(sim.level) + '</div>';
-      h += '<div class="note" style="margin:0">兴趣相似度(标签向量余弦相似度) · 有效样本 A ' + sim.sample_a + ' 条 / B ' + sim.sample_b + ' 条</div>';
+      h += '<div class="note" style="margin:0">兴趣相似度(标签向量余弦相似度 · 已按 IDF 抑制泛标签) · 有效样本 A ' + sim.sample_a + ' 条 / B ' + sim.sample_b + ' 条</div>';
       h += '</div>';
 
       if (hasScore) {
