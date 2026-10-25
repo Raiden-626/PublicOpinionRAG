@@ -83,7 +83,7 @@ def _group_name(members, vectors, df, n_users):
         for tag, w in vectors[uid].items():
             weight[tag] = weight.get(tag, 0.0) + w
 
-    generic_limit = max(1, int(n_users * GENERIC_DF_RATIO))
+    generic_limit = max(1, n_users * GENERIC_DF_RATIO)
     ranked = sorted(
         ((tag, w) for tag, w in weight.items() if df.get(tag, 0) < generic_limit),
         # 先按覆盖成员数, 再按权重: 避免组内单个用户的强偏好标签压过全员共有的标签
