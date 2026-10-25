@@ -724,7 +724,7 @@
     /* 首页落地页 */
     .landing-cards {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       gap: 20px;
       margin: 40px 0;
     }
@@ -762,6 +762,56 @@
       font-size: 14px;
       color: var(--muted);
       line-height: 1.5;
+    }
+
+    /* 用户记录视图: 用户卡片网格 */
+    .user-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+      margin-top: 8px
+    }
+
+    .user-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      cursor: pointer;
+      text-align: left;
+      font-family: inherit;
+      transition: all 0.18s ease
+    }
+
+    .user-card:hover {
+      border-color: var(--brand);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow)
+    }
+
+    .user-card.active {
+      border-color: var(--brand);
+      background: var(--brand-light)
+    }
+
+    .user-card .uc-uid {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--brand);
+      font-family: var(--mono)
+    }
+
+    .user-card .uc-meta {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px
+    }
+
+    .user-card .uc-badges {
+      margin-top: 8px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap
     }
 
     /* 返回按钮 */
@@ -901,7 +951,7 @@
     <h1>B站用户舆情分析</h1>
     <div class="sub">输入 UID → 抓取评论/弹幕 → 分析关注 / 生成报告 / RAG 问答（DeepSeek 流式输出）</div>
 
-    <!-- 首页视图：两个主选项 -->
+    <!-- 首页视图：三个主选项 -->
     <div id="landingView">
       <div class="landing-cards">
         <button class="landing-card" onclick="showView('query')">
@@ -913,6 +963,11 @@
           <div class="lc-icon">🔧</div>
           <div class="lc-title">补全数据</div>
           <div class="lc-desc">补全视频信息（分区/标签），从 B站 API 获取缺失数据</div>
+        </button>
+        <button class="landing-card" onclick="showView('records')">
+          <div class="lc-icon">📁</div>
+          <div class="lc-title">用户记录</div>
+          <div class="lc-desc">查看已入库用户的评论、弹幕与历史分析记录</div>
         </button>
       </div>
     </div>
@@ -1074,6 +1129,39 @@
         </div>
       </div>
     </div><!-- end backfillView -->
+
+    <!-- 用户记录视图 -->
+    <div id="recordsView" style="display:none">
+      <button class="back-btn" onclick="showView('landing')">← 返回首页</button>
+
+      <div class="q-bar">
+        <label>用户记录</label>
+        <input id="recordUid" type="text" inputmode="numeric" placeholder="直接输入 UID 查看记录" autocomplete="off" />
+        <button class="sm-btn" id="btnRecordGo"
+          style="background:var(--brand);color:#fff;border-color:var(--brand)">查看记录</button>
+        <span class="status" id="recordStatus"></span>
+      </div>
+
+      <div class="panel" id="pRecordUsers">
+        <div class="panel-hd" onclick="togglePanel('pRecordUsers')">
+          <h3>已入库用户 <span class="meta" id="recordUsersMeta"></span></h3>
+          <span class="toggle" id="pRecordUsers_toggle">▾</span>
+        </div>
+        <div class="panel-bd" id="recordUsersBody">
+          <div style="text-align:center;color:#999;padding:20px">正在加载…</div>
+        </div>
+      </div>
+
+      <div class="panel" id="pRecordDetail">
+        <div class="panel-hd" onclick="togglePanel('pRecordDetail')">
+          <h3>记录详情 <span class="meta" id="recordDetailMeta"></span></h3>
+          <span class="toggle" id="pRecordDetail_toggle">▾</span>
+        </div>
+        <div class="panel-bd" id="recordDetailBody">
+          <div style="text-align:center;color:#999;padding:20px">点击上方用户卡片,或输入 UID 查看其评论与弹幕</div>
+        </div>
+      </div>
+    </div><!-- end recordsView -->
   </div>
 
   <script>
@@ -1086,6 +1174,8 @@
       $('landingView').style.display = view === 'landing' ? 'block' : 'none';
       $('queryView').style.display = view === 'query' ? 'block' : 'none';
       $('backfillView').style.display = view === 'backfill' ? 'block' : 'none';
+      $('recordsView').style.display = view === 'records' ? 'block' : 'none';
+      if (view === 'records') loadRecordUsers();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -1441,14 +1531,19 @@
       bd.innerHTML = h;
     }
 
+    // 取单条历史记录的完整内容(查询视图与用户记录视图共用)
+    async function fetchHistoryRecord(uid, id) {
+      const r = await fetch("/api/history/" + id + "?uid=" + uid);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error);
+      return j.record;
+    }
+
     async function viewHistoryRecord(id) {
       const uid = uidVal();
       if (!/^\d+$/.test(uid)) { alert("UID 无效"); return; }
       try {
-        const r = await fetch("/api/history/" + id + "?uid=" + uid);
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error);
-        const rec = j.record;
+        const rec = await fetchHistoryRecord(uid, id);
         showPanel("pHistory", true);
         const bd = $("historyBody");
         let h = '<div style="margin-bottom:12px">' +
@@ -1481,6 +1576,163 @@
 
     // 绑定历史按钮点击事件
     $("btnHistory").onclick = () => loadHistory(null, true);
+
+    // ---- 用户记录视图 ----
+    let recordUsers = [];      // 已入库用户列表
+    let currentRecordUid = null; // 当前查看的 uid
+
+    async function loadRecordUsers() {
+      const bd = $("recordUsersBody");
+      showPanel("pRecordUsers", false);
+      bd.innerHTML = '<div class="loading"><span class="spin"></span>正在加载已入库用户…</div>';
+      $("recordUsersMeta").textContent = "";
+      try {
+        const r = await fetch("/api/records/users");
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error);
+        recordUsers = j.users || [];
+        $("recordUsersMeta").textContent = "共 " + recordUsers.length + " 位用户";
+        renderRecordUsers();
+      } catch (e) {
+        bd.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    function renderRecordUsers() {
+      const bd = $("recordUsersBody");
+      if (!recordUsers.length) {
+        bd.innerHTML = '<div style="text-align:center;color:#999;padding:20px">库里还没有任何用户数据</div>';
+        return;
+      }
+      let h = '<div class="user-grid">';
+      for (const u of recordUsers) {
+        const active = String(u.uid) === String(currentRecordUid) ? ' active' : '';
+        h += '<button class="user-card' + active + '" onclick="loadUserRecord(' + u.uid + ')">' +
+          '<div class="uc-uid">' + u.uid + '</div>' +
+          '<div class="uc-meta">评论 ' + u.comment_count + ' 条 · 弹幕 ' + u.danmu_count + ' 条</div>' +
+          '<div class="uc-badges">';
+        if (u.has_focus) h += '<span class="tag cm">关注</span>';
+        if (u.has_report) h += '<span class="tag dm">报告</span>';
+        if (u.last_ctime) h += '<span class="tag">' + escapeHtml(u.last_ctime) + '</span>';
+        h += '</div></button>';
+      }
+      h += '</div>';
+      bd.innerHTML = h;
+    }
+
+    // 触发器: 点击用户卡片 / 输入 UID 后加载该用户的记录
+    async function loadUserRecord(uid) {
+      uid = String(uid || "").trim();
+      if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
+      currentRecordUid = uid;
+      $("recordUid").value = uid;
+      renderRecordUsers();
+
+      showPanel("pRecordDetail", true);
+      $("pRecordDetail_toggle")?.classList.remove("collapsed");
+      $("recordDetailMeta").textContent = "";
+      $("recordDetailBody").innerHTML =
+        '<div class="loading"><span class="spin"></span>正在加载 UID ' + uid + ' 的记录…</div>';
+
+      try {
+        // 记录与历史并行取,历史复用查询视图的同一套接口
+        const [recR, hisR] = await Promise.all([
+          fetch("/api/records?uid=" + uid),
+          fetch("/api/history?uid=" + uid),
+        ]);
+        const rec = await recR.json();
+        if (!recR.ok) throw new Error(rec.error);
+        const his = hisR.ok ? await hisR.json() : { records: [] };
+        renderRecordDetail(uid, rec, his.records || []);
+      } catch (e) {
+        $("recordDetailBody").innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    function renderRecordDetail(uid, rec, history) {
+      $("recordDetailMeta").textContent = "UID " + uid;
+
+      let h = '<div class="cnt-grid">';
+      h += '<div class="b"><div class="n">' + rec.comment_total + '</div><div class="l">评论总数</div></div>';
+      h += '<div class="b"><div class="n">' + rec.danmu_total + '</div><div class="l">弹幕总数</div></div>';
+      h += '<div class="b"><div class="n">' + (rec.comments.length + rec.danmu.length) + '</div><div class="l">本次展示</div></div>';
+      h += '</div>';
+
+      h += renderRecordTable("评论", rec.comments, rec.comment_total);
+      h += renderRecordTable("弹幕", rec.danmu, rec.danmu_total);
+
+      // 历史记录: 最近在关注什么 / 舆情分析报告
+      const focus = history.find(x => x.kind === "focus");
+      const report = history.find(x => x.kind === "report");
+      h += renderRecordHistory(uid, focus, "最近在关注什么", "cm");
+      h += renderRecordHistory(uid, report, "舆情分析报告", "dm");
+
+      $("recordDetailBody").innerHTML = h;
+    }
+
+    function renderRecordTable(title, rows, total) {
+      let h = '<h3 style="margin-top:18px">' + title +
+        ' <span class="tag cm">' + rows.length + ' 条</span></h3>';
+      if (!rows.length) {
+        return h + '<div class="sim-empty">暂无数据</div>';
+      }
+      h += '<table class="data"><tr><th>时间</th><th>内容</th><th>分区</th><th>链接</th></tr>';
+      for (const r of rows) {
+        const tags = (r.tags || []).slice(0, 3).join(" / ");
+        h += '<tr><td style="white-space:nowrap">' + (r.ctime || "-") + '</td>' +
+          '<td class="c">' + escapeHtml(r.content) +
+          (tags ? '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(tags) + '</div>' : '') +
+          '</td>' +
+          '<td style="white-space:nowrap">' + escapeHtml(r.zone || "-") + '</td>' +
+          '<td>' + (r.url ? '<a href="' + r.url + '" target="_blank">查看</a>' : "-") + '</td></tr>';
+      }
+      h += '</table>';
+      if (total > rows.length) {
+        h += '<div class="note">共 ' + total + ' 条,此处展示最近 ' + rows.length + ' 条</div>';
+      }
+      return h;
+    }
+
+    function renderRecordHistory(uid, rec, title, tagClass) {
+      if (!rec) return '';
+      const boxId = "hrec-" + rec.id;
+      let h = '<h3 style="margin-top:18px">' + title + ' <span class="tag ' + tagClass + '">历史记录</span></h3>';
+      h += '<div class="history-item">';
+      h += '<div class="hi-header">' +
+        '<span class="hi-title">' + escapeHtml(rec.title || "(无标题)") + '</span>' +
+        '<span class="hi-time">' + escapeHtml(rec.created_at || "") + '</span></div>';
+      h += '<div class="hi-actions">' +
+        '<button onclick="toggleRecordHistory(' + uid + ', ' + rec.id + ', \'' + boxId + '\')">展开完整内容</button></div>';
+      h += '<div id="' + boxId + '" style="display:none;margin-top:8px"></div>';
+      h += '</div>';
+      return h;
+    }
+
+    // 触发器: 展开/收起历史记录全文
+    async function toggleRecordHistory(uid, id, boxId) {
+      const box = document.getElementById(boxId);
+      if (!box) return;
+      if (box.style.display !== "none") {
+        box.style.display = "none";
+        return;
+      }
+      box.style.display = "";
+      box.innerHTML = '<div class="loading"><span class="spin"></span>正在加载…</div>';
+      try {
+        const rec = await fetchHistoryRecord(uid, id);
+        box.innerHTML = '<div class="md">' +
+          (window.marked ? marked.parse(rec.content)
+            : '<pre style="white-space:pre-wrap">' + escapeHtml(rec.content) + '</pre>') + '</div>';
+      } catch (e) {
+        box.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    // 触发器: UID 直达
+    $("btnRecordGo").onclick = () => loadUserRecord($("recordUid").value);
+    $("recordUid").addEventListener("keydown", e => {
+      if (e.key === "Enter") $("btnRecordGo").click();
+    });
 
     // ---- 功能5: 用户互动分析 ----
     $("btnInteract").onclick = () => {

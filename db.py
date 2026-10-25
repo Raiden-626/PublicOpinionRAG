@@ -410,6 +410,115 @@ def count_rows(uid):
         conn.close()
 
 
+def list_ingested_users():
+    """列出库中已有数据的用户及其数据量(用户记录视图用)。
+
+    数据来源: comment / danmu / history 三类表,取并集,保证只生成了历史记录
+    但评论弹幕已清空的用户也能被列出。
+
+    返回 list[dict]:
+      uid, comment_count, danmu_count, has_focus, has_report, last_ctime
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+                "WHERE TABLE_SCHEMA=%s AND ("
+                "TABLE_NAME LIKE 'bilibili_comment_%%' OR "
+                "TABLE_NAME LIKE 'bilibili_danmu_%%' OR "
+                "TABLE_NAME LIKE 'bilibili_history_%%')",
+                (MYSQL["database"],),
+            )
+            uids = set()
+            for (tbl,) in cur.fetchall():
+                for prefix in ("bilibili_comment_", "bilibili_danmu_", "bilibili_history_"):
+                    if tbl.startswith(prefix):
+                        tail = tbl[len(prefix):]
+                        if tail.isdigit():
+                            uids.add(int(tail))
+                        break
+
+        users = []
+        for uid in sorted(uids):
+            info = {
+                "uid": uid,
+                "comment_count": 0,
+                "danmu_count": 0,
+                "has_focus": False,
+                "has_report": False,
+                "last_ctime": None,
+            }
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        f"SELECT COUNT(*), MAX(ctime) FROM `{comment_table(uid)}`"
+                    )
+                    cnt, mx = cur.fetchone()
+                    info["comment_count"] = int(cnt or 0)
+                    if mx:
+                        info["last_ctime"] = mx
+                except pymysql.err.ProgrammingError:
+                    pass
+                try:
+                    cur.execute(
+                        f"SELECT COUNT(*), MAX(ctime) FROM `{danmu_table(uid)}`"
+                    )
+                    cnt, mx = cur.fetchone()
+                    info["danmu_count"] = int(cnt or 0)
+                    if mx and not info["last_ctime"]:
+                        info["last_ctime"] = mx
+                except pymysql.err.ProgrammingError:
+                    pass
+                try:
+                    cur.execute(f"SELECT kind FROM `{history_table(uid)}`")
+                    for (kind,) in cur.fetchall():
+                        if kind == "focus":
+                            info["has_focus"] = True
+                        elif kind == "report":
+                            info["has_report"] = True
+                except pymysql.err.ProgrammingError:
+                    pass
+            users.append(info)
+
+        # 最近有活动的排前面
+        users.sort(
+            key=lambda u: (u["last_ctime"] or datetime.min, u["uid"]),
+            reverse=True,
+        )
+        return users
+    finally:
+        conn.close()
+
+
+def fetch_recent_records(kind, uid, limit=20):
+    """取该 uid 最近 limit 条评论/弹幕(按 ctime 倒序),只取展示需要的列。
+
+    不复用 fetch_sample: 那个是 SELECT *, 会把 comment.raw / danmu.extra
+    这些大 JSON 字段一起拖出来, 展示用不着。
+    """
+    tbl = table_for(kind, uid)
+    if kind == "comment":
+        cols = ("id, oid, bvid, rpid, content, ctime, url, "
+                "tid, tname, tags, video_owner_uid")
+    else:
+        cols = "id, oid, bvid, dmid, content, ctime, url, tid, tname, tags"
+
+    conn = get_conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                f"SELECT {cols} FROM `{tbl}` "
+                f"ORDER BY ctime DESC, id DESC LIMIT %s",
+                (limit,),
+            )
+            return cur.fetchall()
+    except pymysql.err.ProgrammingError:
+        return []
+    finally:
+        conn.close()
+
+
 def user_profile(uid):
     """用户画像: 按 tname(分区) 和 tags(标签) 聚合评论+弹幕,得到兴趣分布。
 

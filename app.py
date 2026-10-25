@@ -9,6 +9,8 @@
   6. GET  /api/task    ?task_id=    轮询任务状态/累积文本
   7. POST /api/re_embed {uid}       补全缺失向量(MySQL→Chroma)
   8. POST /api/backfill {uids}      补全视频信息(tid/tname/tags)
+  9. GET  /api/records/users        列出已入库用户(用户记录视图)
+ 10. GET  /api/records ?uid=        某用户的评论/弹幕记录(各前 N 条)
 
 启动:
   .venv\\Scripts\\python.exe app.py
@@ -16,8 +18,10 @@
 """
 
 import os
+import json
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 # 加载 .env 文件(显式指定路径,避免工作目录问题)
@@ -40,6 +44,7 @@ from flask import Flask, render_template, request, jsonify
 import db
 import generate
 import ingest
+from zones import zone_name
 
 app = Flask(__name__)
 
@@ -491,6 +496,73 @@ def api_interactions():
         return _json({"error": f"查询失败: {e}"}, 500)
 
 
+def _fmt_time(row):
+    """把记录里的 created_at 由 datetime 格式化为 "YYYY-MM-DD HH:MM"(原地修改)。"""
+    ct = row.get("created_at")
+    if isinstance(ct, datetime):
+        row["created_at"] = ct.strftime("%Y-%m-%d %H:%M")
+    return row
+
+
+# ---- 用户记录 ----
+
+
+@app.route("/api/records/users")
+def api_record_users():
+    """列出库中已有数据的用户(用户记录视图的用户卡片列表)。"""
+    try:
+        users = db.list_ingested_users()
+        for u in users:
+            ct = u.get("last_ctime")
+            u["last_ctime"] = ct.strftime("%Y-%m-%d %H:%M") if ct else None
+        return _json({"users": users})
+    except Exception as e:
+        return _json({"error": f"查询失败: {str(e)}"}, 500)
+
+
+@app.route("/api/records")
+def api_records():
+    """某用户最近 limit 条评论与弹幕。参数: uid, limit(默认 20)。"""
+    uid = (request.args.get("uid") or "").strip()
+    if not uid.isdigit():
+        return _json({"error": "uid 必须为数字"}, 400)
+    uid = int(uid)
+    try:
+        limit = int(request.args.get("limit", "20"))
+    except ValueError:
+        limit = 20
+
+    def _fmt(rows):
+        out = []
+        for row in rows:
+            r = dict(row)
+            ct = r.get("ctime")
+            r["ctime"] = ct.strftime("%Y-%m-%d %H:%M") if ct else None
+            # 分区名: 库里 tname 可能为空, 用本地 tid→分区名映射表兜底
+            r["zone"] = zone_name(r.get("tid"), r.get("tname"))
+            tags = r.get("tags")
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                except Exception:
+                    tags = []
+            r["tags"] = tags if isinstance(tags, list) else []
+            out.append(r)
+        return out
+
+    try:
+        counts = db.count_rows(uid)
+        return _json({
+            "uid": uid,
+            "comments": _fmt(db.fetch_recent_records("comment", uid, limit)),
+            "danmu": _fmt(db.fetch_recent_records("danmu", uid, limit)),
+            "comment_total": counts.get("comment", 0),
+            "danmu_total": counts.get("danmu", 0),
+        })
+    except Exception as e:
+        return _json({"error": f"查询失败: {str(e)}"}, 500)
+
+
 # ---- 历史记录管理 ----
 
 
@@ -505,6 +577,8 @@ def api_history_list():
     limit = int(request.args.get("limit", "50"))
     try:
         records = db.list_history(uid, kind=kind, limit=limit)
+        for r in records:
+            _fmt_time(r)
         return _json({"records": records})
     except Exception as e:
         return _json({"error": f"查询失败: {e}"}, 500)
@@ -521,6 +595,7 @@ def api_history_get(record_id):
         record = db.get_history(uid, record_id)
         if not record:
             return _json({"error": "记录不存在或不属于该用户"}, 404)
+        _fmt_time(record)
         return _json({"record": record})
     except Exception as e:
         return _json({"error": f"查询失败: {e}"}, 500)
