@@ -28,9 +28,24 @@ def _fmt_rows(rows, label):
     return out
 
 
+def _strip_prefix(line):
+    """剥掉行首的 "[评论 2026-09-28] " 这类前缀,只留正文。
+
+    去重比较必须基于正文:前缀里的标签与日期是所有行共有的,
+    短评论会因此共享大量 bigram 被误判为重复。
+    """
+    s = (line or "").strip()
+    if s.startswith("["):
+        end = s.find("]")
+        if end != -1:
+            return s[end + 1 :].strip()
+    return s
+
+
 def _dedup_rows(lines, threshold=0.55):
     """去除近似重复的行(基于字符 bigram Jaccard 相似度)。
     保留首次出现的版本,维持原始顺序。
+    比较时已剥离 "[标签 日期] " 前缀,只看正文。
     """
 
     def bigrams(s):
@@ -40,7 +55,9 @@ def _dedup_rows(lines, threshold=0.55):
     kept = []
     kept_bg = []
     for line in lines:
-        bg = bigrams(line)
+        bg = bigrams(_strip_prefix(line))
+        if not bg:
+            continue
         is_dup = False
         for kbg in kept_bg:
             inter = len(bg & kbg)
@@ -57,15 +74,17 @@ def _dedup_rows(lines, threshold=0.55):
 def _truncate_recent(lines, max_chars):
     """从最新内容开始填充,直到达到字符上限。
     lines 已按时间倒序排列;优先保留最新的条目。
+    返回 (文本, 实际保留的条数)。
     """
-    parts, total = [], 0
+    parts, total, kept = [], 0, 0
     for line in lines:
         block_len = len(line) + 1  # +1 for \n
         if total + block_len > max_chars:
             break
         parts.append(line)
         total += block_len
-    return "\n".join(parts)
+        kept += 1
+    return "\n".join(parts), kept
 
 
 def _fmt_profile(uid):
@@ -80,11 +99,15 @@ def _fmt_profile(uid):
     tname_dist = profile.get("tname_dist", [])
     tag_dist = profile.get("tag_dist", [])
     total = profile.get("total", 0)
+    annotated = profile.get("annotated", total)
 
     if not tname_dist and not tag_dist:
         return ""
 
-    parts = [f"\n\n【用户画像统计(基于 {total} 条有分区/标签的记录)】"]
+    parts = [
+        f"\n\n【用户画像统计(基于 {annotated} 条有分区/标签的记录, "
+        f"该用户全库共 {total} 条评论+弹幕)】"
+    ]
 
     if tname_dist:
         parts.append("视频分区分布(Top 10):")
@@ -106,7 +129,7 @@ def recent_focus_stream(uid, sample_n=200):
     """功能2: 最近在关注的内容。生成器 yield str token。
 
     取该 uid 最近 sample_n 条评论 + 弹幕(按时间倒序),
-    去重后截断至 6000 字符,流式调用 DeepSeek 归纳。
+    去重后截断至 4000 字符,流式调用 DeepSeek 归纳。
     """
     comments = db.fetch_sample("comment", uid, sample_n)
     danmu = db.fetch_sample("danmu", uid, sample_n)
@@ -116,12 +139,12 @@ def recent_focus_stream(uid, sample_n=200):
 
     lines = _fmt_rows(comments, "评论") + _fmt_rows(danmu, "弹幕")
     lines = _dedup_rows(lines)
-    corpus = _truncate_recent(lines, 4000)
+    corpus, used_lines = _truncate_recent(lines, 4000)
     profile_text = _fmt_profile(uid)
 
     user = (
         f"以下是B站用户 uid={uid} 最近的 {len(comments)} 条评论与 {len(danmu)} 条弹幕"
-        f"(按时间倒序,已去重并截断至最近内容):\n\n{corpus}"
+        f"(已去重并截断至最近内容,实际送入 {used_lines} 条):\n\n{corpus}"
         f"{profile_text}\n\n"
         "请归纳该用户【最近在关注的内容】,输出:\n"
         "1) 关注的主要话题/领域(3-6 个,每个带关键词 + 一句简要说明)\n"
@@ -130,7 +153,7 @@ def recent_focus_stream(uid, sample_n=200):
         "请结合上方画像统计数据(分区分布和标签分布)进行更精准的分析。\n"
         "用中文,结构化,基于给定数据,不编造。"
     )
-    recent_focus_stream.used = len(comments) + len(danmu)
+    recent_focus_stream.used = used_lines
 
     # 累积文本并在生成完成后保存历史记录
     full_text = []
@@ -156,7 +179,7 @@ def recent_focus_stream(uid, sample_n=200):
 def report_stream(uid, sample_n=400):
     """功能3: 舆情分析报告。生成器 yield str token。
 
-    取该 uid 最近 sample_n 条评论 + 弹幕,去重后截断至 6500 字符,
+    取该 uid 最近 sample_n 条评论 + 弹幕,去重后截断至 4500 字符,
     DeepSeek 出领域画像与行为预测。
     """
     comments = db.fetch_sample("comment", uid, sample_n)
@@ -167,12 +190,12 @@ def report_stream(uid, sample_n=400):
 
     lines = _fmt_rows(comments, "评论") + _fmt_rows(danmu, "弹幕")
     lines = _dedup_rows(lines)
-    corpus = _truncate_recent(lines, 4500)
+    corpus, used_lines = _truncate_recent(lines, 4500)
     profile_text = _fmt_profile(uid)
 
     user = (
         f"以下是B站用户 uid={uid} 的 {len(comments)} 条评论与 {len(danmu)} 条弹幕"
-        f"(按时间倒序,已去重):\n\n{corpus}"
+        f"(已去重,实际送入 {used_lines} 条):\n\n{corpus}"
         f"{profile_text}\n\n"
         "请输出该用户的【舆情分析报告】,必须包含以下四部分:\n"
         "## 一、涉猎的方面\n"
@@ -188,7 +211,7 @@ def report_stream(uid, sample_n=400):
         "请结合上方画像统计数据(分区分布和标签分布)进行更精准的分析。\n"
         "用中文,Markdown 结构化输出,严格基于给定数据,不编造。"
     )
-    report_stream.used = len(comments) + len(danmu)
+    report_stream.used = used_lines
 
     # 累积文本并在生成完成后保存历史记录
     full_text = []
@@ -218,6 +241,9 @@ def ask_stream(question, uid, top_k=None):
     """对该 uid 的语料做 RAG 问答。生成器 yield str token。
     调用方可在生成结束后读取 .sources 属性获取来源。
     """
+    # 先清空上一次残留的来源,避免本次提前返回时带着旧数据
+    ask_stream.sources = []
+
     results = retrieve(question, uid, top_k=top_k or 8)
     ctx = build_context(results)
     if not ctx:

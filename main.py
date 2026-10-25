@@ -11,6 +11,8 @@
     python main.py repair --all       # 用本地映射表离线修复 tname(零 API 请求)
     python main.py mark-dead --all    # 确认并登记失效视频(稿件不可见/已删除)
     python main.py clear-dead         # 清除失效视频登记
+    python main.py repair-rpid --all  # 离线修复评论表 rpid(默认预览, --write 才写库)
+    python main.py repair-dead --write # 给 dead_video 表补 uid/kind
 """
 import argparse
 
@@ -58,6 +60,15 @@ def main():
     p_cd = sub.add_parser("clear-dead", help="清除失效视频登记")
     p_cd.add_argument("uid", type=int, nargs="?",
                       help="只清除该 uid 登记的; 省略则清除全部")
+
+    p_rr = sub.add_parser("repair-rpid",
+                          help="离线修复评论表 rpid(归位成评论自身id, 旧值迁到 root_id)")
+    p_rr.add_argument("uid", type=int, nargs="?", help="只修某个 uid")
+    p_rr.add_argument("--all", action="store_true", help="修所有用户")
+    p_rr.add_argument("--write", action="store_true", help="真正写库(默认只预览)")
+
+    p_rd = sub.add_parser("repair-dead", help="给 dead_video 表补 uid/kind")
+    p_rd.add_argument("--write", action="store_true", help="真正写库(默认只预览)")
 
     args = ap.parse_args()
 
@@ -167,6 +178,35 @@ def main():
         deleted = db.clear_dead_videos(args.uid)
         scope = "全部" if args.uid is None else f"uid={args.uid}"
         print(f"已清除{scope}的失效视频登记 {deleted} 条")
+
+    elif args.cmd == "repair-rpid":
+        import repair
+
+        if args.uid:
+            uids = [args.uid]
+        elif args.all:
+            uids = None
+        else:
+            print("请指定 uid 或使用 --all 参数")
+            p_rr.print_help()
+            return
+
+        st = repair.repair_rpid(uids=uids, write=args.write)
+        print(f"\nrpid 归位: 扫描 {st['scanned']}, 已更新 {st['updated']}, "
+              f"待更新 {st['would_update']}, 无需改 {st['skipped']}, "
+              f"无自身id {st['no_own']}, 冲突 {st['conflicts']}")
+        if not args.write:
+            print("(预览模式, 加 --write 才会写库)")
+
+    elif args.cmd == "repair-dead":
+        import repair
+
+        st = repair.repair_dead_meta(write=args.write)
+        print(f"\ndead_video 补全: 扫描 {st['scanned']}, 已更新 {st['updated']}, "
+              f"待更新 {st['would_update']}, 无需改 {st['skipped']}, "
+              f"找不到来源 {st['unresolved']}")
+        if not args.write:
+            print("(预览模式, 加 --write 才会写库)")
 
 
 if __name__ == "__main__":

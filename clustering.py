@@ -41,7 +41,7 @@ def _eligible_uids(state):
     for uid, prof in state["profiles"].items():
         if not state["vectors"].get(uid):
             continue
-        if (prof.get("total") or 0) < MIN_SAMPLE:
+        if similarity._sample(prof) < MIN_SAMPLE:
             continue
         result.append(uid)
     return sorted(result)
@@ -100,7 +100,7 @@ def _group_name(members, vectors, df, n_users):
     return tags, detail
 
 
-def _build_group(members, scores, vectors, df, n_users, user_stats):
+def _build_group(members, scores, vectors, df, n_users, user_stats, threshold=DEFAULT_THRESHOLD):
     """组装一个群体的输出结构。"""
     pairs = []
     for i, a in enumerate(members):
@@ -122,7 +122,7 @@ def _build_group(members, scores, vectors, df, n_users, user_stats):
     kind = "group" if len(members) >= GROUP_MIN_SIZE else "pair"
 
     notes = []
-    if min_pair < DEFAULT_THRESHOLD:
+    if min_pair < threshold:
         notes.append("该组由相似关系链合并, 组内最弱的一对仅 %.1f%%" % (min_pair * 100))
 
     return {
@@ -204,7 +204,7 @@ def discover(threshold=DEFAULT_THRESHOLD, uid=None):
         if len(members) < 2:
             continue
         groups.append(_build_group(sorted(members), scores, vectors, state["df"],
-                                   len(uids), stats))
+                                   len(uids), stats, threshold))
     groups.sort(key=lambda g: (-g["size"], -g["cohesion"]))
 
     neighbors = []

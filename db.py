@@ -19,8 +19,12 @@ def danmu_table(uid):
     return f"bilibili_danmu_{uid}"
 
 def table_for(kind, uid):
-    """kind='comment'/'danmu',返回对应表名。"""
-    return comment_table(uid) if kind == "comment" else danmu_table(uid)
+    """kind='comment'/'danmu',返回对应表名。非法 kind 直接报错, 不再默认落到弹幕表。"""
+    if kind == "comment":
+        return comment_table(uid)
+    if kind == "danmu":
+        return danmu_table(uid)
+    raise ValueError(f"未知的 kind: {kind!r}(只支持 'comment' / 'danmu')")
 
 def history_table(uid):
     """返回该 uid 的历史记录表名。"""
@@ -63,7 +67,7 @@ CREATE TABLE IF NOT EXISTS `{table}` (
   bvid         VARCHAR(20)  DEFAULT NULL COMMENT '视频BV号',
   dmid         BIGINT       DEFAULT NULL COMMENT '弹幕dmid(去重键)',
   content      TEXT         NOT NULL COMMENT '弹幕正文',
-  video_offset INT          DEFAULT NULL COMMENT '视频内时间偏移(秒)',
+  video_offset DOUBLE      DEFAULT NULL COMMENT '视频内时间偏移(秒,可含小数)',
   ctime        DATETIME     DEFAULT NULL COMMENT '弹幕发送时间',
   mode         INT          DEFAULT NULL COMMENT '弹幕模式(1滚动/4底/5顶/6逆/7特殊)',
   color        INT          DEFAULT NULL COMMENT '弹幕颜色',
@@ -166,6 +170,25 @@ def _add_column_if_missing(conn, tbl, col_name, col_def, index_def=None):
             print(f"[migrate] {tbl}: 已添加 {col_name} 列")
 
 
+def _widen_column_if_needed(conn, tbl, col_name, target_type):
+    """辅助: 列存在且类型不是 target_type 时改列类型(如 INT -> DOUBLE)。
+    已存在的值按原值保留(被截断的小数无法恢复, 只能靠重新抓取补回)。
+    """
+    with conn.cursor() as cur:
+        cur.execute(f"SHOW COLUMNS FROM `{tbl}` LIKE %s", (col_name,))
+        row = cur.fetchone()
+        if not row:
+            return
+        cur_type = row[1]
+        if cur_type.lower() == target_type.lower():
+            return
+        cur.execute(
+            f"ALTER TABLE `{tbl}` MODIFY COLUMN {col_name} "
+            f"{target_type} DEFAULT NULL COMMENT '视频内时间偏移(秒,可含小数)'"
+        )
+        print(f"[migrate] {tbl}: {col_name} 类型 {cur_type} -> {target_type}")
+
+
 def migrate_comment_table(uid):
     """为已有评论表添加缺失列(video_owner_uid, tid, tname, tags)。"""
     tbl = comment_table(uid)
@@ -189,7 +212,8 @@ def migrate_comment_table(uid):
 
 
 def migrate_danmu_table(uid):
-    """为已有弹幕表添加缺失列(video_owner_uid, tid, tname, tags)。"""
+    """为已有弹幕表添加缺失列(video_owner_uid, tid, tname, tags),
+    并把 video_offset 从 INT 升为 DOUBLE(旧表会截断弹幕偏移的小数秒)。"""
     tbl = danmu_table(uid)
     conn = get_conn()
     try:
@@ -203,6 +227,8 @@ def migrate_danmu_table(uid):
                                "VARCHAR(50) DEFAULT NULL COMMENT '视频分区名'")
         _add_column_if_missing(conn, tbl, "tags",
                                "JSON DEFAULT NULL COMMENT '视频标签列表'")
+        # video_offset: 旧表是 INT, 弹幕偏移含小数会被截断 → 改为 DOUBLE
+        _widen_column_if_needed(conn, tbl, "video_offset", "DOUBLE")
         conn.commit()
     except pymysql.err.ProgrammingError:
         pass  # 表不存在,跳过
@@ -327,6 +353,50 @@ def get_dead_oids():
         conn.close()
 
 
+def find_oid_sources(oid):
+    """找出引用该 oid 的用户表, 返回 [(uid, kind), ...](kind: comment/danmu)。
+
+    用于给 dead_video 表补 uid/kind —— 运行期发现视频失效时, 调用方往往拿不到 uid,
+    可以回查数据库来确定来源。表不存在会被跳过。
+    """
+    if oid is None:
+        return []
+    conn = get_conn()
+    found = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+                "WHERE TABLE_SCHEMA=%s AND ("
+                "TABLE_NAME LIKE 'bilibili_comment_%%' OR "
+                "TABLE_NAME LIKE 'bilibili_danmu_%%')",
+                (MYSQL["database"],),
+            )
+            tables = [r[0] for r in cur.fetchall()]
+
+        for tbl in tables:
+            if tbl.startswith("bilibili_comment_"):
+                uid_str = tbl[len("bilibili_comment_"):]
+                kind = "comment"
+            elif tbl.startswith("bilibili_danmu_"):
+                uid_str = tbl[len("bilibili_danmu_"):]
+                kind = "danmu"
+            else:
+                continue
+            if not uid_str.isdigit():
+                continue
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT 1 FROM `{tbl}` WHERE oid=%s LIMIT 1", (oid,))
+                    if cur.fetchone():
+                        found.append((int(uid_str), kind))
+            except pymysql.err.ProgrammingError:
+                continue  # 表不存在,跳过
+        return found
+    finally:
+        conn.close()
+
+
 def clear_dead_videos(uid=None):
     """清除失效标记。uid=None 清除全部,否则只清除该 uid 记录的。返回删除行数。"""
     conn = get_conn()
@@ -348,10 +418,14 @@ def clear_dead_videos(uid=None):
 # ---- 写入 ----
 def _fallback_key(row, kind):
     """当 rpid/dmid 为 None 时,用 uid+content+ctime 的哈希作为备选去重键。
-    返回 int(取哈希前 8 位 hex 转 int),保证可存入 BIGINT 列。
+    返回 int(取哈希前 16 位 hex 转 int),保证可存入 BIGINT 列。
+
+    位宽说明: 早期版本只取前 8 位 hex(32 位), 在万级行数下生日碰撞概率已接近 1,
+    碰撞会让 INSERT IGNORE 静默丢行。故改为 64 位(前 16 位 hex)。
+    现有存量数据中不存在旧算法生成的键(已全量核对), 无需迁移。
     """
     raw = f"{row.get('uid')}|{row.get('content', '')}|{row.get('ctime', '')}"
-    h = hashlib.md5(raw.encode()).hexdigest()[:8]
+    h = hashlib.md5(raw.encode()).hexdigest()[:16]
     return int(h, 16)
 
 
@@ -525,14 +599,16 @@ def user_profile(uid):
     返回 dict:
       tname_dist: [{"tname": str, "count": int, "pct": float}, ...]  按 count 降序
       tag_dist:   [{"tag": str, "count": int, "pct": float}, ...]    按 count 降序
-      total:      int  (评论+弹幕总数)
+      total:      int  (评论+弹幕总条数)
+      annotated:  int  (其中带分区/标签的条数, 分布占比与相似度权重的分母)
     """
     import json as _json
     from collections import Counter
 
     tname_counter = Counter()
     tag_counter = Counter()
-    total = 0
+    total = 0        # 评论+弹幕总条数
+    annotated = 0    # 其中带分区/标签的条数
 
     conn = get_conn()
     try:
@@ -540,6 +616,10 @@ def user_profile(uid):
             tbl = table_for(kind, uid)
             with conn.cursor(pymysql.cursors.DictCursor) as cur:
                 try:
+                    cur.execute(f"SELECT COUNT(*) AS c FROM `{tbl}`")
+                    cnt_row = cur.fetchone()
+                    if cnt_row and cnt_row.get("c") is not None:
+                        total += int(cnt_row["c"])
                     cur.execute(
                         f"SELECT tname, tags FROM `{tbl}` "
                         f"WHERE (tname IS NOT NULL AND tname <> '') OR tags IS NOT NULL"
@@ -548,8 +628,8 @@ def user_profile(uid):
                     continue
                 rows = cur.fetchall()
 
+            annotated += len(rows)
             for row in rows:
-                total += 1
                 tname = row.get("tname")
                 if tname and tname.strip():
                     tname_counter[tname.strip()] += 1
@@ -570,11 +650,14 @@ def user_profile(uid):
     finally:
         conn.close()
 
+    # 占比的分母是"有分区/标签的记录数"(annotated), 保证各分区占比之和接近 100%
+    denom = annotated or total
+
     # 转为排序列表
     def _to_dist(counter, key_name):
         items = []
         for name, cnt in counter.most_common():
-            pct = round(cnt / total * 100, 1) if total else 0
+            pct = round(cnt / denom * 100, 1) if denom else 0
             items.append({key_name: name, "count": cnt, "pct": pct})
         return items
 
@@ -582,6 +665,7 @@ def user_profile(uid):
         "tname_dist": _to_dist(tname_counter, "tname"),
         "tag_dist": _to_dist(tag_counter, "tag"),
         "total": total,
+        "annotated": annotated,
     }
 
 
@@ -593,7 +677,7 @@ def fetch_sample(kind, uid, limit=200):
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
-                f"SELECT * FROM `{tbl}` ORDER BY ctime DESC LIMIT %s",
+                f"SELECT * FROM `{tbl}` ORDER BY ctime DESC, id DESC LIMIT %s",
                 (limit,),
             )
             return cur.fetchall()
@@ -683,37 +767,51 @@ if __name__ == "__main__":
 
 # ---- 历史记录 CRUD ----
 
+def _save_history_once(conn, tbl, uid, kind, content, title):
+    """在已打开的连接上写入一条历史记录(不负责建表)。返回记录 id。"""
+    with conn.cursor() as cur:
+        # 先查找是否已有该 uid+kind 的记录
+        cur.execute(
+            f"SELECT id FROM `{tbl}` WHERE uid=%s AND kind=%s",
+            (uid, kind),
+        )
+        existing = cur.fetchone()
+
+        if existing:
+            # 已有记录,更新内容
+            record_id = existing[0]
+            cur.execute(
+                f"UPDATE `{tbl}` SET title=%s, content=%s, created_at=NOW() WHERE id=%s",
+                (title, content, record_id),
+            )
+        else:
+            # 无记录,插入新记录
+            cur.execute(
+                f"INSERT INTO `{tbl}` (uid, kind, title, content) VALUES (%s, %s, %s, %s)",
+                (uid, kind, title, content),
+            )
+            record_id = cur.lastrowid
+    conn.commit()
+    return record_id
+
+
 def save_history(uid, kind, content, title=None):
     """保存生成记录到历史表。kind: 'focus'/'report'/'ask'。
     每个 uid+kind 只保留一份最新记录,新生成会覆盖旧的。返回记录 id。
+    历史表不存在时(该 uid 从未走过入库流程)自动建表后重试一次。
     """
     tbl = history_table(uid)
     conn = get_conn()
     try:
-        with conn.cursor() as cur:
-            # 先查找是否已有该 uid+kind 的记录
-            cur.execute(
-                f"SELECT id FROM `{tbl}` WHERE uid=%s AND kind=%s",
-                (uid, kind),
-            )
-            existing = cur.fetchone()
-
-            if existing:
-                # 已有记录,更新内容
-                record_id = existing[0]
-                cur.execute(
-                    f"UPDATE `{tbl}` SET title=%s, content=%s, created_at=NOW() WHERE id=%s",
-                    (title, content, record_id),
-                )
-            else:
-                # 无记录,插入新记录
-                cur.execute(
-                    f"INSERT INTO `{tbl}` (uid, kind, title, content) VALUES (%s, %s, %s, %s)",
-                    (uid, kind, title, content),
-                )
-                record_id = cur.lastrowid
-        conn.commit()
-        return record_id
+        try:
+            return _save_history_once(conn, tbl, uid, kind, content, title)
+        except pymysql.err.ProgrammingError:
+            # 历史表不存在 → 建表后重试一次
+            conn.rollback()
+            with conn.cursor() as cur:
+                cur.execute(_HISTORY_SCHEMA.format(table=tbl))
+            conn.commit()
+            return _save_history_once(conn, tbl, uid, kind, content, title)
     finally:
         conn.close()
 
@@ -776,6 +874,11 @@ def clear_uid_data(uid, kinds=("comment", "danmu")):
     """清空指定 uid 的评论和弹幕数据,同时重置增量入库状态。返回删除的行数。
     用于覆盖模式:先清空再重新入库。
     """
+    invalid_kinds = [k for k in kinds if k not in ("comment", "danmu")]
+    if invalid_kinds:
+        raise ValueError(
+            f"未知的 kinds: {invalid_kinds}(只支持 'comment' / 'danmu'), 未执行清空"
+        )
     conn = get_conn()
     total_deleted = 0
     try:

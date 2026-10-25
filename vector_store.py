@@ -12,18 +12,31 @@ _collection = _client.get_or_create_collection(
 
 
 def add(ids, embeddings, documents, metadatas):
-    """批量写入向量。四个参数均为等长 list。"""
+    """批量写入向量。四个参数均为等长 list。返回实际新增条数。
+
+    注意: Chroma 的 add() 对已存在的 id 是静默跳过(不抛异常),
+    所以实际写入数可能小于传入条数, 调用方应据此反馈。
+    """
     # 检查 ID 格式(警告但不阻止写入)
     invalid_count = sum(1 for id_str in ids if not _validate_id_format(id_str))
     if invalid_count > 0:
         print(f"[WARNING] add() 中有 {invalid_count} 条 ID 使用旧格式(应为 kind_uid_mysqlid)")
 
+    before = _collection.count()
     _collection.add(
         ids=ids,
         embeddings=embeddings,
         documents=documents,
         metadatas=metadatas,
     )
+    after = _collection.count()
+    written = max(0, after - before)
+    if written < len(ids):
+        print(
+            f"[WARNING] add() 请求 {len(ids)} 条, 实际新增 {written} 条"
+            f"({len(ids) - written} 条 id 已存在被跳过)"
+        )
+    return written
 
 
 def query(query_embedding, top_k=8, where=None):
@@ -47,17 +60,40 @@ def query(query_embedding, top_k=8, where=None):
 
 
 def query_by_uid(query_embedding, uid, top_k=8):
-    """按 uid 过滤的语义检索。不使用 Chroma where 子句(大整数不可靠),
-    改为多取候选后在 Python 侧过滤。
+    """按 uid 过滤的语义检索。优先用 Chroma where 子句精确过滤(uid 为 int64),
+    若过滤后为空(老数据 uid 存成字符串时匹配不上),再回退到"多取候选 + Python 侧过滤"。
     返回 list[dict]: {id, document, metadata, distance}。
     """
-    candidates = top_k * 3  # 多取 3 倍,过滤后仍保留 top_k
+    uid_int = int(uid)
+
+    # 优先:Chroma 原生过滤,召回准确且不会被全局 top-k 截断
+    try:
+        res = _collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            where={"uid": uid_int},
+        )
+        out = []
+        for i in range(len(res["ids"][0])):
+            out.append({
+                "id": res["ids"][0][i],
+                "document": res["documents"][0][i],
+                "metadata": res["metadatas"][0][i],
+                "distance": res["distances"][0][i],
+            })
+        if out:
+            return out
+    except Exception as e:
+        print(f"[WARNING] query_by_uid 的 where 过滤失败, 回退到 Python 侧过滤: {e}")
+
+    # 回退:多取 3 倍候选,过滤后仍保留 top_k
+    candidates = top_k * 3
     res = _collection.query(
         query_embeddings=[query_embedding],
         n_results=candidates,
     )
     out = []
-    uid_int, uid_str = int(uid), str(uid)
+    uid_str = str(uid)
     for i in range(len(res["ids"][0])):
         m = res["metadatas"][0][i]
         u = m.get("uid")

@@ -2,7 +2,7 @@
 
 互动类型:
   1. on_video  — A 在 B 的视频下发评论 (video_owner_uid = B)
-  2. same_thread — A 与 B 在同一评论楼中出现 (rpid 相同)
+  2. same_thread — A 与 B 在同一评论楼中出现 (评论楼 id 相同)
 
 数据来源: MySQL 中已入库的评论数据 + B站API实时补充视频UP主信息。
 """
@@ -55,7 +55,11 @@ def _query_interactions_from_table(table, commenter_uid, target_uid):
 
 
 def _query_same_thread(table_a, table_b, uid_a, uid_b):
-    """查找两个用户在同一评论楼(rpid 相同)中的记录。
+    """查找两个用户在同一评论楼中的记录。
+
+    "评论楼 id" = COALESCE(root_id, rpid):
+      - 修复后 rpid 是评论自身 id, 楼由 root_id 标识(根评论的 root_id = 自身 rpid)
+      - 未修复的旧数据 root_id 为空, 此时旧 rpid 存的正是楼 id, COALESCE 仍然正确
 
     返回 (a_records, b_records)。
     """
@@ -63,19 +67,21 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
     conn = db.get_conn()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            # 取 A 表中所有非空 rpid
+            # 取 A 表中所有非空评论楼 id
             cur.execute(
-                f"SELECT DISTINCT rpid FROM `{table_a}` WHERE rpid IS NOT NULL"
+                f"SELECT DISTINCT COALESCE(root_id, rpid) AS thread_id "
+                f"FROM `{table_a}` WHERE COALESCE(root_id, rpid) IS NOT NULL"
             )
-            a_rpids = {row["rpid"] for row in cur.fetchall()}
+            a_rpids = {row["thread_id"] for row in cur.fetchall()}
             if not a_rpids:
                 return a_records, b_records
 
-            # 取 B 表中所有非空 rpid
+            # 取 B 表中所有非空评论楼 id
             cur.execute(
-                f"SELECT DISTINCT rpid FROM `{table_b}` WHERE rpid IS NOT NULL"
+                f"SELECT DISTINCT COALESCE(root_id, rpid) AS thread_id "
+                f"FROM `{table_b}` WHERE COALESCE(root_id, rpid) IS NOT NULL"
             )
-            b_rpids = {row["rpid"] for row in cur.fetchall()}
+            b_rpids = {row["thread_id"] for row in cur.fetchall()}
 
             # 交集: 两人共同出现的评论楼
             shared_rpids = a_rpids & b_rpids
@@ -87,8 +93,8 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
 
             # 从 A 的表取记录
             cur.execute(
-                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid, tid, tname, tags "
-                f"FROM `{table_a}` WHERE rpid IN ({placeholders}) "
+                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid, root_id, tid, tname, tags "
+                f"FROM `{table_a}` WHERE COALESCE(root_id, rpid) IN ({placeholders}) "
                 f"ORDER BY ctime DESC",
                 args,
             )
@@ -103,6 +109,7 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
                     "ctime": row["ctime"].strftime("%Y-%m-%d %H:%M") if row.get("ctime") else None,
                     "url": row["url"],
                     "rpid": row["rpid"],
+                    "root_id": row.get("root_id"),
                     "tid": row.get("tid"),
                     "tname": row.get("tname"),
                     "tags": row.get("tags"),
@@ -111,8 +118,8 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
 
             # 从 B 的表取记录
             cur.execute(
-                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid, tid, tname, tags "
-                f"FROM `{table_b}` WHERE rpid IN ({placeholders}) "
+                f"SELECT id, uid, content, oid, bvid, ctime, url, rpid, root_id, tid, tname, tags "
+                f"FROM `{table_b}` WHERE COALESCE(root_id, rpid) IN ({placeholders}) "
                 f"ORDER BY ctime DESC",
                 args,
             )
@@ -127,6 +134,7 @@ def _query_same_thread(table_a, table_b, uid_a, uid_b):
                     "ctime": row["ctime"].strftime("%Y-%m-%d %H:%M") if row.get("ctime") else None,
                     "url": row["url"],
                     "rpid": row["rpid"],
+                    "root_id": row.get("root_id"),
                     "tid": row.get("tid"),
                     "tname": row.get("tname"),
                     "tags": row.get("tags"),
@@ -196,9 +204,15 @@ def _try_resolve_missing_owners(uid):
                     tags = info.get("tags")
                     
                     # 只要有任何一个字段需要更新就执行
+                    # 用 COALESCE 兜底: 新值为 NULL 时保留库里已有值, 防止把已填好的字段覆盖成 NULL
                     if owner is not None or tid is not None or tname is not None or tags is not None:
                         cur.execute(
-                            f"UPDATE `{tbl}` SET video_owner_uid=%s, tid=%s, tname=%s, tags=%s WHERE id=%s",
+                            f"UPDATE `{tbl}` SET "
+                            f"video_owner_uid=COALESCE(%s, video_owner_uid), "
+                            f"tid=COALESCE(%s, tid), "
+                            f"tname=COALESCE(%s, tname), "
+                            f"tags=COALESCE(%s, tags) "
+                            f"WHERE id=%s",
                             (owner, tid, tname,
                              json.dumps(tags, ensure_ascii=False) if tags else None,
                              row["id"]),

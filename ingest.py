@@ -138,9 +138,16 @@ def dead_oids(force_refresh=False):
 
 
 def mark_dead_video(oid, reason, uid=None, kind=None):
-    """把失效视频记入 dead_video 表, 之后不再向 B站 请求它。"""
+    """把失效视频记入 dead_video 表, 之后不再向 B站 请求它。
+
+    uid/kind 未提供时回查数据库确定来源用户(运行期发现失效的路径拿不到上下文)。
+    """
     try:
         import db
+        if uid is None:
+            sources = db.find_oid_sources(oid)
+            if sources:
+                uid, kind = sources[0]
         db.mark_dead_videos([(oid, uid, kind, reason)])
         _dead_cache["oids"].add(oid)
         _dead_cache["ts"] = time.time()
@@ -647,7 +654,9 @@ def parse_comment_card(card, uid):
     ctime = _parse_ctime(time_cap)
 
     hrefs = [a.get("href", "") for a in card.select("a[href]")]
-    oid = root_id = None
+    oid = None
+    own_rpid = None   # 评论自身的 rpid(去重键),取自直达链接的 #reply<id> 片段
+    root_id = None    # 被回复的根评论 id(取自 ?root=<id>)
     for h in hrefs:
         if h.startswith("/"):
             h = "https://www.bilibili.com" + h
@@ -658,10 +667,10 @@ def parse_comment_card(card, uid):
         if m:
             oid = int(m.group(1))
         m = _REPLY_RE.search(h)
-        if m:
-            root_id = int(m.group(1))
+        if m and own_rpid is None:
+            own_rpid = int(m.group(1))
         m = _ROOT_RE.search(h)
-        if m:
+        if m and root_id is None:
             root_id = int(m.group(1))
     # 直达链接(方式0 优先)
     url = next((h for h in hrefs if "#reply" in h), hrefs[0] if hrefs else None)
@@ -670,7 +679,8 @@ def parse_comment_card(card, uid):
         "uid": int(uid),
         "oid": oid,
         "bvid": None,
-        "rpid": root_id,  # root_id 即评论 rpid,作去重键
+        "rpid": own_rpid,   # 评论自身的 rpid,作去重键
+        "root_id": root_id,  # 被回复的根评论 id(无则 None)
         "content": content,
         "ctime": ctime,
         "category": None,
@@ -800,9 +810,10 @@ def _collect_kind(page, kind, uid):
     return records, total
 
 
-def scrape_uid(uid, kinds=("comment", "danmu"), headless=True):
+def scrape_uid(uid, kinds=("comment", "danmu"), headless=True, totals=None):
     """抓取指定 uid 的评论/弹幕,返回 {kind: [records]}。同时落 JSON 便于核对。
 
+    totals: 可选 dict, 调用方传入后会被填入 {kind: 站点报告总数}(用于判断抓取完整性)。
     不依赖 MySQL/Chroma,纯抓取,可单独验证。
     """
     out = {}
@@ -817,6 +828,8 @@ def scrape_uid(uid, kinds=("comment", "danmu"), headless=True):
                 continue
             recs, total = _collect_kind(page, kind, uid)
             out[kind] = recs
+            if totals is not None:
+                totals[kind] = total
             print(f"[{kind}] uid={uid} 抓到 {len(recs)} 条(站点报告总数={total})")
             _dump_json(uid, kind, recs)
         b.close()
@@ -843,6 +856,9 @@ def _dump_json(uid, kind, records):
 def _to_mysql_row(rec, kind):
     """把抓取记录转为 MySQL 行 dict(ctime 转 datetime 已是,JSON 字段 None)。"""
     row = dict(rec)
+    # 评论楼 id: 回复的 root_id 取自 ?root=; 根评论本身就是楼, 用自身 rpid
+    if kind == "comment" and row.get("root_id") is None:
+        row["root_id"] = row.get("rpid")
     # db.insert_* 期望键与表列一致;ctime 保持 datetime
     return row
 
@@ -879,6 +895,12 @@ def ingest_uid(
     import vector_store
     from clients import embed
 
+    invalid_kinds = [k for k in kinds if k not in ("comment", "danmu")]
+    if invalid_kinds:
+        raise ValueError(
+            f"未知的 kinds: {invalid_kinds}(只支持 'comment' / 'danmu')"
+        )
+
     db.ensure_tables(uid)
 
     # 覆盖模式:先清空旧数据 + 重置 watermark
@@ -901,13 +923,23 @@ def ingest_uid(
         else:
             print(f"[{kind}] 全量模式(首次抓取或无 watermark)")
 
-    data = scrape_uid(uid, kinds=kinds, headless=headless)
+    totals = {}
+    data = scrape_uid(uid, kinds=kinds, headless=headless, totals=totals)
 
     result = {"fetched": {}, "inserted": {}, "samples": {}, "incremental": incremental}
     for kind, records in data.items():
         table = db.table_for(kind, uid)
         insert = db.insert_comment if kind == "comment" else db.insert_danmu
         watermark = watermarks.get(kind)
+
+        # 抓取完整性: 实际条数少于站点报告总数, 说明中间可能有缺失
+        site_total = totals.get(kind) or 0
+        complete = len(records) >= site_total
+        if not complete:
+            print(
+                f"[{kind}] 抓取 {len(records)} 条 < 站点报告 {site_total} 条, "
+                f"本次抓取可能不完整, watermark 不推进"
+            )
 
         # 增量过滤: 只保留 ctime > watermark 的记录
         if watermark:
@@ -942,7 +974,7 @@ def ingest_uid(
             if existing_mids:
                 print(f"[{kind}] 无新增行,Chroma 已有 {len(existing_mids)} 条向量,跳过")
                 # 更新 watermark(即使无新行,也推进到本次抓取的最大 ctime)
-                _update_watermark(uid, kind, records_to_process, watermark)
+                _update_watermark(uid, kind, records_to_process, watermark, complete)
                 continue
             # Chroma 中没有向量,需要补全(从 MySQL 取全部行做向量化)
             from db import fetch_all_ids, fetch_rows_by_ids
@@ -950,7 +982,7 @@ def ingest_uid(
             all_ids = fetch_all_ids(kind, uid)
             if not all_ids:
                 print(f"[{kind}] MySQL 中也无数据,跳过")
-                _update_watermark(uid, kind, records_to_process, watermark)
+                _update_watermark(uid, kind, records_to_process, watermark, complete)
                 continue
             print(f"[{kind}] Chroma 缺少向量,从 MySQL 补全 {len(all_ids)} 条…")
             rows = fetch_rows_by_ids(kind, uid, all_ids)
@@ -970,7 +1002,7 @@ def ingest_uid(
                 else:
                     print(f"[{kind}] 向量化最终失败:{e}（数据已入 MySQL,可稍后补向量）")
         if vecs is None:
-            _update_watermark(uid, kind, records_to_process, watermark)
+            _update_watermark(uid, kind, records_to_process, watermark, complete)
             continue
 
         ids, metas, docs = [], [], []
@@ -994,7 +1026,7 @@ def ingest_uid(
         print(f"[{kind}] 新增 {len(new_rows)} 条入库(MySQL + Chroma)")
 
         # 更新 watermark
-        _update_watermark(uid, kind, records_to_process, watermark)
+        _update_watermark(uid, kind, records_to_process, watermark, complete)
 
     # ---- 失效视频登记 ----
     # 入库完成后收尾: 把"本次仍拿不到分区信息"的视频 oid 过一遍,
@@ -1043,14 +1075,22 @@ def _register_dead_videos(uid, kinds, scraped):
     print(f"[dead] uid={uid} 本次登记失效视频 {len(items)} 个")
 
 
-def _update_watermark(uid, kind, records, old_watermark):
-    """将 watermark 推进到本次处理记录中的最大 ctime。"""
+def _update_watermark(uid, kind, records, old_watermark, complete=True):
+    """将 watermark 推进到本次处理记录中的最大 ctime。
+
+    complete=False 表示本次抓取可能不完整(实际条数少于站点报告总数),
+    此时不推进 watermark —— 否则中间缺失的记录会被增量模式永久跳过。
+    """
     import db
 
     ctimes = [r["ctime"] for r in records if r.get("ctime")]
     if not ctimes:
         return
     max_ctime = max(ctimes)
+    if not complete:
+        held = old_watermark.strftime("%Y-%m-%d %H:%M:%S") if old_watermark else "None"
+        print(f"[{kind}] 抓取可能不完整, watermark 保持在 {held}(不推进)")
+        return
     # 只在 max_ctime 超过旧 watermark 时才推进
     if old_watermark is None or max_ctime > old_watermark:
         db.set_ingest_state(uid, kind, max_ctime)

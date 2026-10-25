@@ -1649,10 +1649,53 @@
         bd.style.display = "none"; tg.classList.add("collapsed");
       }
     }
-    function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    function escapeHtml(s) {
+      return (s || "")
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+
+    // 消毒: LLM 输出与评论正文都可能含 HTML, 插入 DOM 前必须过滤
+    function sanitizeHtml(html) {
+      const BAD_TAGS = new Set(["script", "style", "iframe", "object", "embed",
+        "link", "meta", "base", "form", "input", "button", "textarea", "select", "svg", "math"]);
+      let doc;
+      try {
+        doc = new DOMParser().parseFromString("<div id='__san__'>" + (html || "") + "</div>", "text/html");
+      } catch (e) {
+        return escapeHtml(html);
+      }
+      const root = doc.getElementById("__san__");
+      if (!root) return "";
+      const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      const kill = [];
+      let el = walker.nextNode();
+      while (el) {
+        if (BAD_TAGS.has(el.tagName.toLowerCase())) {
+          kill.push(el);
+        } else {
+          for (const attr of Array.from(el.attributes || [])) {
+            const name = attr.name.toLowerCase();
+            const val = (attr.value || "").replace(/[\s\u0000-\u001f]/g, "").toLowerCase();
+            if (name.indexOf("on") === 0) {
+              el.removeAttribute(attr.name);
+            } else if ((name === "href" || name === "src" || name === "xlink:href" ||
+                        name === "action" || name === "formaction") &&
+                       /^(javascript|vbscript):/.test(val)) {
+              el.removeAttribute(attr.name);
+            } else if (name === "srcdoc") {
+              el.removeAttribute(attr.name);
+            }
+          }
+        }
+        el = walker.nextNode();
+      }
+      kill.forEach(n => n.remove());
+      return root.innerHTML;
+    }
 
     function renderMd(el, text) {
-      if (window.marked) { el.innerHTML = '<div class="md">' + marked.parse(text) + '</div>'; }
+      if (window.marked) { el.innerHTML = '<div class="md">' + sanitizeHtml(marked.parse(text || "")) + '</div>'; }
       else { el.innerHTML = '<pre class="md" style="white-space:pre-wrap">' + escapeHtml(text) + '</pre>'; }
     }
 
@@ -1665,11 +1708,22 @@
     }
 
     // ---- 后台任务轮询(刷新不丢失) ----
-    async function pollTask(panelId, metaId, bodyId, path, body, onDone, scroll) {
+    // 请求进行中禁用对应按钮, 防止重复点击触发多次生成
+    function lockBtn(btnId) {
+      const b = btnId && $(btnId);
+      if (b) { b.disabled = true; b.dataset.locked = "1"; }
+    }
+    function unlockBtn(btnId) {
+      const b = btnId && $(btnId);
+      if (b && b.dataset.locked === "1") { delete b.dataset.locked; updateButtons(); }
+    }
+
+    async function pollTask(panelId, metaId, bodyId, path, body, onDone, scroll, btnId) {
       const panel = $(panelId), meta = $(metaId), bd = $(bodyId);
       showPanel(panelId, scroll);
       panel.querySelector(".panel-bd").style.display = "";
       panel.querySelector("#" + panelId + "_toggle")?.classList.remove("collapsed");
+      lockBtn(btnId);
 
       // 启动/重连任务
       let r;
@@ -1681,11 +1735,13 @@
         });
       } catch (e) {
         bd.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+        unlockBtn(btnId);
         return;
       }
       if (!r.ok) {
         const t = await r.text();
         bd.innerHTML = '<div class="err">' + escapeHtml(t || "HTTP " + r.status) + '</div>';
+        unlockBtn(btnId);
         return;
       }
       const init = await r.json();
@@ -1699,6 +1755,7 @@
         renderMd(bd, init.text);
         if (onDone) onDone(init, init.text);
         ssClearTask(taskId);
+        unlockBtn(btnId);
         return;
       }
 
@@ -1718,7 +1775,15 @@
       const poll = async () => {
         try {
           const r2 = await fetch('/api/task?task_id=' + encodeURIComponent(taskId));
-          const d = await r2.json();
+          let d = {};
+          try { d = await r2.json(); } catch (e) { d = {}; }
+          if (!r2.ok) {
+            stopTimer();
+            bd.innerHTML = '<div class="err">' + escapeHtml(d.error || ("查询任务状态失败 HTTP " + r2.status)) + '</div>';
+            ssClearTask(taskId);
+            unlockBtn(btnId);
+            return;
+          }
           if (d.status === "running") {
             // 增量渲染
             if (d.text && d.text.length > lastLen) {
@@ -1736,17 +1801,21 @@
             }
             if (onDone) onDone(d, d.text || "");
             ssClearTask(taskId);
+            unlockBtn(btnId);
           } else if (d.status === "failed") {
             stopTimer();
             bd.innerHTML = '<div class="err">' + escapeHtml(d.error || "生成失败") + '</div>';
             ssClearTask(taskId);
+            unlockBtn(btnId);
           } else {
             stopTimer();
             bd.innerHTML = '<div class="err">未知状态</div>';
+            unlockBtn(btnId);
           }
         } catch (e) {
           stopTimer();
           bd.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+          unlockBtn(btnId);
         }
       };
       setTimeout(poll, 300);
@@ -1824,46 +1893,53 @@
     $("btnFocus").onclick = () => {
       const uid = uidVal();
       if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
-      pollTask("pFocus", "focusMeta", "focusBody", "/api/focus", { uid }, (ev) => {
+      pollTask("pFocus", "focusMeta", "focusBody", "/api/focus", { uid, force: true }, (ev) => {
         const c = ev.counts || {};
         $("focusMeta").textContent = '评论' + (c.comment || 0) + '/弹幕' + (c.danmu || 0);
-      }, true);
+      }, true, "btnFocus");
     };
 
     // ---- 功能3: 舆情报告(后台任务+轮询) ----
     $("btnReport").onclick = () => {
       const uid = uidVal();
       if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
-      pollTask("pReport", "reportMeta", "reportBody", "/api/report", { uid }, (ev) => {
+      pollTask("pReport", "reportMeta", "reportBody", "/api/report", { uid, force: true }, (ev) => {
         const c = ev.counts || {};
         $("reportMeta").textContent = '评论' + (c.comment || 0) + '/弹幕' + (c.danmu || 0);
-      }, true);
+      }, true, "btnReport");
     };
 
     // ---- 功能4: RAG 问答(后台任务+轮询) ----
-    function doAsk() {
-      const uid = uidVal();
-      const q = $("question").value.trim();
-      if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
-      if (!q) { alert("请输入问题"); return; }
-      pollTask("pAsk", "askMeta", "askBody", "/api/ask", { uid, question: q }, (ev, text) => {
+    // 问答完成后的渲染(刷新恢复时复用, 避免丢失"参考来源")
+    function renderAskDone(q) {
+      return (ev, text) => {
         $("askMeta").textContent = '问题: ' + q;
         // 渲染来源引用
         if (ev.sources && ev.sources.length) {
           let sh = '<div class="sources"><h4>参考来源 (' + ev.sources.length + ' 条)</h4>';
           ev.sources.forEach((s, i) => {
             const dt = s.ctime || "";
-            const txt = (s.content || "").slice(0, 80) + (s.content.length > 80 ? "…" : "");
+            const raw = s.content || "";
+            const txt = raw.slice(0, 80) + (raw.length > 80 ? "…" : "");
             sh += '<div class="src-item"><span class="idx">[' + (i + 1) + ']</span>' +
               '<span class="dt">' + escapeHtml(dt) + '</span>' +
               '<span class="txt">' + escapeHtml(txt) + '</span>' +
-              (s.url ? '<a href="' + s.url + '" target="_blank" style="white-space:nowrap">原文</a>' : '') +
+              (s.url ? '<a href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener noreferrer" style="white-space:nowrap">原文</a>' : '') +
               '</div>';
           });
           sh += '</div>';
           $("askBody").insertAdjacentHTML("beforeend", sh);
         }
-      }, true);
+      };
+    }
+
+    function doAsk() {
+      const uid = uidVal();
+      const q = $("question").value.trim();
+      if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
+      if (!q) { alert("请输入问题"); return; }
+      pollTask("pAsk", "askMeta", "askBody", "/api/ask", { uid, question: q, force: true },
+        renderAskDone(q), true, "btnAsk");
     }
     $("btnAsk").onclick = doAsk;
     $("question").addEventListener("keydown", e => { if (e.key === "Enter") doAsk(); });
@@ -1938,7 +2014,7 @@
         h += '<h3><span class="tag ' + (rec.kind === "focus" ? "cm" : rec.kind === "report" ? "dm" : "ask") + '">' +
           (rec.kind === "focus" ? "关注" : rec.kind === "report" ? "报告" : "问答") +
           '</span> ' + escapeHtml(rec.title || "") + '</h3>';
-        h += '<div class="md">' + (window.marked ? marked.parse(rec.content) : '<pre style="white-space:pre-wrap">' + escapeHtml(rec.content) + '</pre>') + '</div>';
+        h += '<div class="md">' + (window.marked ? sanitizeHtml(marked.parse(rec.content || "")) : '<pre style="white-space:pre-wrap">' + escapeHtml(rec.content) + '</pre>') + '</div>';
         bd.innerHTML = h;
       } catch (e) {
         alert("加载失败: " + e.message);
@@ -2006,9 +2082,11 @@
     }
 
     // 触发器: 点击用户卡片 / 输入 UID 后加载该用户的记录
+    let recordReqSeq = 0;   // 请求序号: 只允许最后一次请求的响应渲染
     async function loadUserRecord(uid) {
       uid = String(uid || "").trim();
       if (!/^\d+$/.test(uid)) { alert("请输入数字 UID"); return; }
+      const seq = ++recordReqSeq;
       currentRecordUid = uid;
       $("recordUid").value = uid;
       renderRecordUsers();
@@ -2028,8 +2106,10 @@
         const rec = await recR.json();
         if (!recR.ok) throw new Error(rec.error);
         const his = hisR.ok ? await hisR.json() : { records: [] };
+        if (seq !== recordReqSeq) return;   // 已有更新的请求, 丢弃本次结果
         renderRecordDetail(uid, rec, his.records || []);
       } catch (e) {
+        if (seq !== recordReqSeq) return;
         $("recordDetailBody").innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
       }
     }
@@ -2106,7 +2186,7 @@
       try {
         const rec = await fetchHistoryRecord(uid, id);
         box.innerHTML = '<div class="md">' +
-          (window.marked ? marked.parse(rec.content)
+          (window.marked ? sanitizeHtml(marked.parse(rec.content || ""))
             : '<pre style="white-space:pre-wrap">' + escapeHtml(rec.content) + '</pre>') + '</div>';
       } catch (e) {
         box.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
@@ -2869,8 +2949,21 @@
           const uid = saved.uid || "";
           if (!uid) continue;
           const path = info.kind === "focus" ? "/api/focus" : info.kind === "report" ? "/api/report" : "/api/ask";
-          const body = info.kind === "ask" ? { uid, question: taskKey.replace(/^ask_\d+_/, "") } : { uid };
-          pollTask(info.panelId, info.metaId, info.bodyId, path, body);
+          const isAsk = info.kind === "ask";
+          const q = isAsk ? taskKey.replace(/^ask_\d+_/, "") : "";
+          const body = isAsk ? { uid, question: q } : { uid };
+          let onDone;
+          if (isAsk) {
+            onDone = renderAskDone(q);
+          } else {
+            const metaId = info.kind === "focus" ? "focusMeta" : "reportMeta";
+            onDone = (ev) => {
+              const c = ev.counts || {};
+              const el = $(metaId);
+              if (el) el.textContent = '评论' + (c.comment || 0) + '/弹幕' + (c.danmu || 0);
+            };
+          }
+          pollTask(info.panelId, info.metaId, info.bodyId, path, body, onDone);
         }
       } catch (e) { }
     })();

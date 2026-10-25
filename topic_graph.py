@@ -81,11 +81,17 @@ def _iter_rows(uids):
             for uid in uids:
                 for kind in ("comment", "danmu"):
                     tbl = db.table_for(kind, uid)
+                    # 弹幕表没有 rpid 列, 只有评论表有(同楼判定要用)
+                    cols = (
+                        "id, oid, bvid, rpid, root_id, video_owner_uid, tname, tags, "
+                        "content, ctime, url"
+                        if kind == "comment"
+                        else
+                        "id, oid, bvid, video_owner_uid, tname, tags, "
+                        "content, ctime, url"
+                    )
                     try:
-                        cur.execute(
-                            f"SELECT id, oid, bvid, video_owner_uid, tname, tags, "
-                            f"content, ctime, url FROM `{tbl}`"
-                        )
+                        cur.execute(f"SELECT {cols} FROM `{tbl}`")
                         rows = cur.fetchall()
                     except Exception:
                         continue  # 表不存在或结构不同, 跳过
@@ -147,7 +153,7 @@ def _load_state(force=False):
     topics = {}
     # 互动索引(与 interactions.py 同口径):
     #   on_video   —— A 在 B 的视频下留言(video_owner_uid = B)
-    #   same_thread—— 两人出现在同一评论楼(rpid 相同)
+    #   same_thread—— 两人出现在同一评论楼(评论楼 id 相同)
     #   co_video   —— 两人在同一视频下都发言过
     on_video = defaultdict(int)
     same_thread = defaultdict(int)
@@ -168,7 +174,7 @@ def _load_state(force=False):
         oid = row.get("oid")
         if oid:
             oid_users[oid].add(uid)
-        rpid = row.get("rpid")
+        rpid = row.get("root_id") or row.get("rpid")
         if rpid:
             rpid_users[int(rpid)].add(uid)
         tags = _row_tags(row)
@@ -263,7 +269,7 @@ def _interaction_pairs(kept, tracked, interactions, key_nodes):
     三种证据(与 interactions.py 同口径):
       共现     —— 两个节点在本话题的同一条视频下都发言过(话题内)
       on_video —— A 在 B 的视频下留言(video_owner_uid = B, 全库口径)
-      同楼     —— 两人出现在同一评论楼(rpid 相同, 全库口径)
+      同楼     —— 两人出现在同一评论楼(评论楼 id 相同, 全库口径)
 
     返回 {(a, b): {"shared_videos": n, "on_video": n, "same_thread": n}}, a < b
     """

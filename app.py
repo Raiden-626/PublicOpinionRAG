@@ -77,31 +77,48 @@ def _run_task(task_key, gen_func, *args, extra_capture=None, **kwargs):
     """后台线程: 运行生成器,累积文本到 _tasks[task_key]。
     extra_capture: 生成结束后要从函数对象上读取的属性名列表(如 ['sources'])。
     """
-    entry = _tasks[task_key]
+    with _tasks_lock:
+        entry = _tasks.get(task_key)
+    if entry is None:
+        return
     try:
         for token in gen_func(*args, **kwargs):
             with _tasks_lock:
-                if _tasks.get(task_key, {}).get("cancelled"):
+                cur = _tasks.get(task_key)
+                # 任务已被新一次生成替换(force), 放弃本次输出
+                if cur is not entry:
                     return
-                _tasks[task_key]["text"] += token
-                _tasks[task_key]["updated"] = time.time()
+                if cur.get("cancelled"):
+                    return
+                cur["text"] += token
+                cur["updated"] = time.time()
         # 捕获额外数据(如 ask_stream.sources)
+        extra = {}
         if extra_capture:
-            extra = {}
             for attr in extra_capture:
                 val = getattr(gen_func, attr, None)
                 if val is not None:
                     extra[attr] = val
-            entry["extra"] = extra
-        entry["status"] = "done"
+        with _tasks_lock:
+            cur = _tasks.get(task_key)
+            if cur is not entry:
+                return
+            if extra:
+                cur["extra"] = extra
+            cur["status"] = "done"
+            cur["updated"] = time.time()
     except Exception as e:
-        entry["status"] = "failed"
-        entry["error"] = str(e)
+        with _tasks_lock:
+            cur = _tasks.get(task_key)
+            if cur is entry:
+                cur["status"] = "failed"
+                cur["error"] = str(e)
+                cur["updated"] = time.time()
 
 
 @app.route("/api/task")
 def api_task():
-    """轮询任务状态。返回 {status, text, error?, extra?}。"""
+    """轮询任务状态。返回 {status, text, counts, error?, extra?}。"""
     task_key = request.args.get("task_id", "").strip()
     if not task_key:
         return _json({"error": "缺少 task_id"}, 400)
@@ -112,6 +129,7 @@ def api_task():
     resp = {
         "status": entry["status"],
         "text": entry["text"],
+        "counts": entry.get("counts") or {},
     }
     if entry.get("error"):
         resp["error"] = entry["error"]
@@ -172,11 +190,18 @@ def api_ingest():
 # ---- 后台任务端点(刷新不丢失) ----
 
 
-def _start_or_reconnect(task_key, gen_func, args, counts, extra_capture=None):
-    """查找已有任务或创建新任务。返回 (task_key, entry)。"""
+def _start_or_reconnect(task_key, gen_func, args, counts, extra_capture=None, force=False):
+    """查找已有任务或创建新任务。返回 (task_key, entry)。
+
+    force=True: 用户主动再次点击按钮, 即使上次已完成也重新生成一次。
+    force=False(默认): 页面刷新恢复时复用已有任务, 不重复消耗 LLM 调用。
+    运行中的任务无论如何都只重连, 不并发启动第二个。
+    """
     with _tasks_lock:
         existing = _tasks.get(task_key)
-        if existing and existing["status"] in ("running", "done"):
+        if existing and existing["status"] == "running":
+            return task_key, existing
+        if existing and existing["status"] == "done" and not force:
             return task_key, existing
         entry = {
             "status": "running",
@@ -203,10 +228,11 @@ def api_focus():
     uid, err = _parse_uid(request.json)
     if err:
         return err
+    force = bool((request.json or {}).get("force"))
     counts = _counts(uid)
     task_key = f"focus_{uid}"
     _, entry = _start_or_reconnect(
-        task_key, generate.recent_focus_stream, (uid,), counts
+        task_key, generate.recent_focus_stream, (uid,), counts, force=force
     )
     return _json(
         {
@@ -223,9 +249,12 @@ def api_report():
     uid, err = _parse_uid(request.json)
     if err:
         return err
+    force = bool((request.json or {}).get("force"))
     counts = _counts(uid)
     task_key = f"report_{uid}"
-    _, entry = _start_or_reconnect(task_key, generate.report_stream, (uid,), counts)
+    _, entry = _start_or_reconnect(
+        task_key, generate.report_stream, (uid,), counts, force=force
+    )
     return _json(
         {
             "task_id": task_key,
@@ -323,12 +352,14 @@ def api_ask():
         )
 
     task_key = f"ask_{uid}_{question}"
+    force = bool((request.json or {}).get("force"))
     _, entry = _start_or_reconnect(
         task_key,
         generate.ask_stream,
         (question, uid),
         counts,
         extra_capture=["sources"],
+        force=force,
     )
     resp = {
         "task_id": task_key,
@@ -392,7 +423,8 @@ def api_re_embed():
 
             ids, metas, docs = [], [], []
             for row, vec in zip(rows, vecs):
-                ids.append(f"{kind}_{row['id']}")
+                # ID 必须与入库时一致: kind_uid_mysqlid
+                ids.append(f"{kind}_{uid}_{row['id']}")
                 metas.append(
                     {
                         "uid": uid,
@@ -402,10 +434,14 @@ def api_re_embed():
                         "oid": row.get("oid") or 0,
                     }
                 )
-                docs.append(row["content"])
-            vector_store.add(ids=ids, embeddings=vecs, documents=docs, metadatas=metas)
-            results[kind] = {"missing": len(missing_ids), "embedded": len(rows)}
-            debug_info.append(f"{kind}: 已写入Chroma{len(rows)}条")
+                # 嵌入文本包含日期, 与入库时保持一致
+                ctime_str = row["ctime"].strftime("%Y-%m-%d") if row.get("ctime") else "未知时间"
+                docs.append(f"[{ctime_str}] {row['content']}")
+            written = vector_store.add(
+                ids=ids, embeddings=vecs, documents=docs, metadatas=metas
+            )
+            results[kind] = {"missing": len(missing_ids), "embedded": written}
+            debug_info.append(f"{kind}: 已写入Chroma{written}条(请求{len(rows)}条)")
 
         results["uid"] = uid
         results["counts"] = _counts(uid)
@@ -531,6 +567,7 @@ def api_records():
         limit = int(request.args.get("limit", "20"))
     except ValueError:
         limit = 20
+    limit = max(1, min(limit, 200))
 
     def _fmt(rows):
         out = []
@@ -658,7 +695,11 @@ def api_history_list():
         return _json({"error": "uid 必须为数字"}, 400)
     uid = int(uid)
     kind = request.args.get("kind", "").strip() or None
-    limit = int(request.args.get("limit", "50"))
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except ValueError:
+        limit = 50
+    limit = max(1, min(limit, 200))
     try:
         records = db.list_history(uid, kind=kind, limit=limit)
         for r in records:

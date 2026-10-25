@@ -119,14 +119,29 @@ def _level_of(score):
     return LEVELS[-1][1]
 
 
+def _sample(prof):
+    """参与统计的有效记录数(有分区/标签的记录条数)。
+
+    db.user_profile 返回的 total 是评论+弹幕的总条数, 而分布计数只覆盖带分区/标签的记录,
+    所以权重分母与样本量判定必须用 annotated, 否则权重被稀释、条数还原也会算错。
+    兼容旧数据(没有 annotated 键时退回 total)。
+    """
+    if not prof:
+        return 0
+    val = prof.get("annotated")
+    if val is None:
+        val = prof.get("total", 0)
+    return val or 0
+
+
 def _profile(uid):
     """取用户画像, 失败时返回空画像而不是抛错。"""
     try:
         profile = db.user_profile(uid)
     except Exception as e:
         print(f"[similarity] 获取 uid={uid} 画像失败: {e}")
-        return {"tname_dist": [], "tag_dist": [], "total": 0}
-    return profile or {"tname_dist": [], "tag_dist": [], "total": 0}
+        return {"tname_dist": [], "tag_dist": [], "total": 0, "annotated": 0}
+    return profile or {"tname_dist": [], "tag_dist": [], "total": 0, "annotated": 0}
 
 
 def _ingested_uids():
@@ -177,7 +192,7 @@ def load_state(force=False):
     raw_vectors = {}
     vectors = {}
     for uid, prof in profiles.items():
-        vec = build_vector(prof.get("tag_dist", []) or [], prof.get("total", 0), "tag")
+        vec = build_vector(prof.get("tag_dist", []) or [], _sample(prof), "tag")
         raw_vectors[uid] = vec
         vectors[uid] = apply_idf(vec, idf)
 
@@ -199,7 +214,7 @@ def _vector_of(uid, state):
     if vec is not None:
         return vec
     prof = state["profiles"].get(uid) or _profile(uid)
-    return apply_idf(build_vector(prof.get("tag_dist", []) or [], prof.get("total", 0), "tag"),
+    return apply_idf(build_vector(prof.get("tag_dist", []) or [], _sample(prof), "tag"),
                      state.get("idf") or {})
 
 
@@ -209,7 +224,7 @@ def _raw_vector_of(uid, state):
     if raw is not None:
         return raw
     prof = state["profiles"].get(uid) or _profile(uid)
-    return build_vector(prof.get("tag_dist", []) or [], prof.get("total", 0), "tag")
+    return build_vector(prof.get("tag_dist", []) or [], _sample(prof), "tag")
 
 
 def _profile_of(uid, state):
@@ -241,37 +256,37 @@ def compare(uid_a, uid_b):
     prof_a = _profile_of(uid_a, state)
     prof_b = _profile_of(uid_b, state)
 
-    total_a = prof_a.get("total", 0)
-    total_b = prof_b.get("total", 0)
+    sample_a = _sample(prof_a)
+    sample_b = _sample(prof_b)
 
     raw_a = _raw_vector_of(uid_a, state)
     raw_b = _raw_vector_of(uid_b, state)
     tag_a = _vector_of(uid_a, state)   # IDF 加权, 参与余弦
     tag_b = _vector_of(uid_b, state)
-    part_a = build_vector(prof_a.get("tname_dist", []) or [], total_a, "tname")
-    part_b = build_vector(prof_b.get("tname_dist", []) or [], total_b, "tname")
+    part_a = build_vector(prof_a.get("tname_dist", []) or [], sample_a, "tname")
+    part_b = build_vector(prof_b.get("tname_dist", []) or [], sample_b, "tname")
 
     score = cosine(tag_a, tag_b)
     level = _level_of(score)
 
     notes = []
-    if total_a == 0:
+    if sample_a == 0:
         notes.append(f"UID {uid_a} 暂无可用的分区/标签数据(需先抓取入库并补全视频信息)")
-    if total_b == 0:
+    if sample_b == 0:
         notes.append(f"UID {uid_b} 暂无可用的分区/标签数据(需先抓取入库并补全视频信息)")
     if score is not None:
-        if total_a < MIN_SAMPLE:
-            notes.append(f"UID {uid_a} 有效样本仅 {total_a} 条, 结果仅供参考")
-        if total_b < MIN_SAMPLE:
-            notes.append(f"UID {uid_b} 有效样本仅 {total_b} 条, 结果仅供参考")
+        if sample_a < MIN_SAMPLE:
+            notes.append(f"UID {uid_a} 有效样本仅 {sample_a} 条, 结果仅供参考")
+        if sample_b < MIN_SAMPLE:
+            notes.append(f"UID {uid_b} 有效样本仅 {sample_b} 条, 结果仅供参考")
 
     # 共同关注点: 条数/占比取原始 tf 口径, 排序取 IDF 加权后的贡献度
     shared = []
     for tag in set(tag_a) & set(tag_b):
         shared.append({
             "tag": tag,
-            "count_a": int(round(raw_a.get(tag, 0.0) * total_a)),
-            "count_b": int(round(raw_b.get(tag, 0.0) * total_b)),
+            "count_a": int(round(raw_a.get(tag, 0.0) * sample_a)),
+            "count_b": int(round(raw_b.get(tag, 0.0) * sample_b)),
             "pct_a": round(raw_a.get(tag, 0.0) * 100, 1),
             "pct_b": round(raw_b.get(tag, 0.0) * 100, 1),
             "contribution": tag_a[tag] * tag_b[tag],
@@ -294,8 +309,8 @@ def compare(uid_a, uid_b):
         items.sort(key=lambda x: (-x["count"], x["tag"]))
         return items[:DISTINCT_TOP]
 
-    distinct_a = _distinct(raw_a, raw_b, total_a)
-    distinct_b = _distinct(raw_b, raw_a, total_b)
+    distinct_a = _distinct(raw_a, raw_b, sample_a)
+    distinct_b = _distinct(raw_b, raw_a, sample_b)
 
     part_shared = [p for p in part_a if p in part_b]
     part_only_a = [p for p in part_a if p not in part_b]
@@ -304,8 +319,8 @@ def compare(uid_a, uid_b):
     return {
         "score": round(score, 4) if score is not None else None,
         "level": level,
-        "sample_a": total_a,
-        "sample_b": total_b,
+        "sample_a": sample_a,
+        "sample_b": sample_b,
         "shared_tags": shared,
         "distinct_a": distinct_a,
         "distinct_b": distinct_b,
