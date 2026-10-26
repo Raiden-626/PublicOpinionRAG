@@ -207,7 +207,7 @@ def _api_get(url):
         return None, str(e)
 
 
-def get_video_info(oid, skip_dead=None, mark_dead=None):
+def get_video_info(oid, skip_dead=None, mark_dead=None, uid=None, kind=None):
     """获取视频完整信息: owner_uid, tid, tname, tags。结果缓存。
 
     返回 dict: {"owner_uid": int|None, "tid": int|None, "tname": str|None, "tags": list|None}
@@ -215,6 +215,8 @@ def get_video_info(oid, skip_dead=None, mark_dead=None):
 
     skip_dead: 是否跳过已确认失效的视频(默认跟随 config.SKIP_DEAD_VIDEOS 开关)。
     mark_dead: 是否把确认失效的视频登记进 dead_video 表(默认跟随开关)。
+    uid/kind: 本次抓取的来源用户与类型(comment/danmu)。登记失效视频时带上,
+              这样即使这批数据还没落库, dead_video 表也能记到来源用户。
     """
     if oid is None:
         return {"owner_uid": None, "tid": None, "tname": None, "tags": None}
@@ -245,7 +247,7 @@ def get_video_info(oid, skip_dead=None, mark_dead=None):
         # 稿件不可见/已删除 -> 永久失效, 记入 dead_video 表
         code, message = _parse_api_error(err)
         if mark_dead and code in _GONE_CODES:
-            mark_dead_video(oid, f"code={code} {message}".strip())
+            mark_dead_video(oid, f"code={code} {message}".strip(), uid=uid, kind=kind)
         return result
     _video_info_failed.pop(oid, None)
 
@@ -271,9 +273,12 @@ def get_video_owner(oid):
     return get_video_info(oid).get("owner_uid")
 
 
-def resolve_video_info(records):
+def resolve_video_info(records, uid=None, kind=None):
     """批量解析记录的 video_owner_uid, tid, tname, tags(带缓存,相同 oid 只请求一次)。
     适用于评论和弹幕记录。
+
+    uid/kind: 本次抓取的来源用户与类型, 透传给 get_video_info,
+              用于登记失效视频时记录来源(否则新抓的数据还没落库, 查不到来源用户)。
     """
     oids = set()
     for rec in records:
@@ -283,7 +288,7 @@ def resolve_video_info(records):
     if oids:
         print(f"[api] 批量查询 {len(oids)} 个视频的信息(UP主/分区/标签)...")
     for oid in oids:
-        get_video_info(oid)
+        get_video_info(oid, uid=uid, kind=kind)
     # 填充到记录中
     for rec in records:
         oid = rec.get("oid")
@@ -378,7 +383,7 @@ def backfill_video_info(uids=None, batch_size=50):
                 if oid in dead:
                     stats["skipped"] += 1
                     continue
-                info = get_video_info(oid)
+                info = get_video_info(oid, uid=uid, kind=kind)
                 if info.get("tid") is not None or info.get("tags") is not None:
                     updates.append((row["id"], info))
                 else:
@@ -580,7 +585,7 @@ def mark_dead_videos_for_uid(uid, limit=None, write_back=False):
     resolved = {}   # oid -> info(用于回写)
     for oid in oids:
         # 强制请求一次并登记: 即使已登记失效也要重新确认
-        info = get_video_info(oid, skip_dead=False, mark_dead=True)
+        info = get_video_info(oid, skip_dead=False, mark_dead=True, uid=uid, kind=kind)
         if info.get("tid") is not None:
             stats["alive"] += 1
             resolved[oid] = info
@@ -805,7 +810,7 @@ def _collect_kind(page, kind, uid):
 
     # 批量解析视频信息(UP主/分区/标签) — 评论和弹幕都需要
     if records:
-        resolve_video_info(records)
+        resolve_video_info(records, uid=uid, kind=kind)
 
     return records, total
 

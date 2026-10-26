@@ -164,6 +164,7 @@ def _try_resolve_missing_owners(uid):
     tables = [db.comment_table(uid), db.danmu_table(uid)]
 
     for tbl in tables:
+        kind = "danmu" if tbl == db.danmu_table(uid) else "comment"
         conn = db.get_conn()
         resolved = 0
         try:
@@ -192,7 +193,7 @@ def _try_resolve_missing_owners(uid):
             for row in rows:
                 oid = row["oid"]
                 if oid not in oid_info_map:
-                    oid_info_map[oid] = get_video_info(oid)
+                    oid_info_map[oid] = get_video_info(oid, uid=uid, kind=kind)
 
             # 回写数据库
             with conn.cursor() as cur:

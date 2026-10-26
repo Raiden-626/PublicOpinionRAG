@@ -3,6 +3,7 @@
 Chroma 的 metadata 里存 (mysql_table, mysql_id),检索命中后用 mysql_id 回查此处拿原文与完整上下文。
 """
 import hashlib
+import json
 from datetime import datetime
 
 import pymysql
@@ -416,6 +417,20 @@ def clear_dead_videos(uid=None):
 
 
 # ---- 写入 ----
+def _json_safe(value):
+    """把 list/tuple/dict 值转成 JSON 字符串, 其余值原样返回。
+
+    MySQL 的 JSON 列(tags/raw)不能直接接收 Python list 作为 SQL 参数:
+    pymysql 会把 list 转成行构造器 ('a','b'), MySQL 直接报
+    1241 "Operand should contain 1 column(s)"; dict 则会被 pymysql 直接拒绝
+    (TypeError: dict can not be used as parameter)。
+    所以凡是要进 JSON 列的值, 统一在这里先序列化。
+    """
+    if isinstance(value, (list, tuple, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
 def _fallback_key(row, kind):
     """当 rpid/dmid 为 None 时,用 uid+content+ctime 的哈希作为备选去重键。
     返回 int(取哈希前 16 位 hex 转 int),保证可存入 BIGINT 列。
@@ -448,7 +463,7 @@ def _upsert(table, row, uniq_col):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, [row[c] for c in cols])
+            cur.execute(sql, [_json_safe(row[c]) for c in cols])
             new_id = cur.lastrowid if cur.rowcount else None
         conn.commit()
         return new_id
