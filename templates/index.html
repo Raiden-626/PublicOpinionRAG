@@ -5,7 +5,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>B站用户舆情分析</title>
-  <link rel="icon" href="/static/favicon.ico" />
+  <link rel="icon" href="/static/PublicOpinionRAG与B站用户舆情分析_48x48.ico" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
   <script src="/static/echarts.min.js"></script>
   <style>
@@ -1238,7 +1238,7 @@
 <body>
   <div class="wrap">
     <h1>B站用户舆情分析</h1>
-    <div class="sub">输入 UID → 抓取评论/弹幕 → 分析关注 / 生成报告 / RAG 问答（DeepSeek 流式输出）</div>
+    <div class="sub">输入 UID → 抓取评论/弹幕 → 分析关注 / 生成报告 / RAG 问答/互动分析</div>
 
     <!-- 首页视图：三个主选项 -->
     <div id="landingView">
@@ -1539,7 +1539,8 @@
       <div class="m-hint" id="pickHint"></div>
       <div class="m-actions">
         <button class="sm-btn" onclick="closePickUsers()">取消</button>
-        <button class="sm-btn" id="btnPickOk" style="background:var(--brand);color:#fff;border-color:var(--brand)">确定</button>
+        <button class="sm-btn" id="btnPickOk"
+          style="background:var(--brand);color:#fff;border-color:var(--brand)">确定</button>
       </div>
     </div>
   </div>
@@ -1680,8 +1681,8 @@
             if (name.indexOf("on") === 0) {
               el.removeAttribute(attr.name);
             } else if ((name === "href" || name === "src" || name === "xlink:href" ||
-                        name === "action" || name === "formaction") &&
-                       /^(javascript|vbscript):/.test(val)) {
+              name === "action" || name === "formaction") &&
+              /^(javascript|vbscript):/.test(val)) {
               el.removeAttribute(attr.name);
             } else if (name === "srcdoc") {
               el.removeAttribute(attr.name);
