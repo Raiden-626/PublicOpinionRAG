@@ -282,19 +282,37 @@ def compare(uid_a, uid_b):
 
     # 共同关注点: 条数/占比取原始 tf 口径, 排序取 IDF 加权后的贡献度
     shared = []
+    norm_ab = None
+    if score is not None and score > 0:
+        na = math.sqrt(sum(w * w for w in tag_a.values()))
+        nb = math.sqrt(sum(w * w for w in tag_b.values()))
+        if na > 0 and nb > 0:
+            norm_ab = na * nb
     for tag in set(tag_a) & set(tag_b):
-        shared.append({
+        item = {
             "tag": tag,
             "count_a": int(round(raw_a.get(tag, 0.0) * sample_a)),
             "count_b": int(round(raw_b.get(tag, 0.0) * sample_b)),
             "pct_a": round(raw_a.get(tag, 0.0) * 100, 1),
             "pct_b": round(raw_b.get(tag, 0.0) * 100, 1),
-            "contribution": tag_a[tag] * tag_b[tag],
-        })
-    shared.sort(key=lambda x: (-x["contribution"], x["tag"]))
-    for item in shared:
-        item.pop("contribution", None)
+        }
+        if norm_ab:
+            # 该标签对最终相似度分数的贡献点数(所有点数之和 = score*100)
+            item["point"] = round(tag_a[tag] * tag_b[tag] / norm_ab * 100, 1)
+        shared.append(item)
+    shared.sort(key=lambda x: (-x.get("point", 0.0), x["tag"]))
     shared = shared[:SHARED_TOP]
+
+    # 兴趣重合率: 两人共同标签上取较小权重之和 / 各自总权重,
+    # 含义是 "A 的兴趣里有百分之多少 B 也有"(0~1), 比余弦分数更直观
+    overlap_a = overlap_b = None
+    if tag_a and tag_b:
+        sum_a = sum(tag_a.values())
+        sum_b = sum(tag_b.values())
+        if sum_a > 0:
+            overlap_a = sum(min(tag_a[t], tag_b.get(t, 0.0)) for t in tag_a) / sum_a
+        if sum_b > 0:
+            overlap_b = sum(min(tag_b[t], tag_a.get(t, 0.0)) for t in tag_b) / sum_b
 
     def _distinct(src, other, total):
         items = []
@@ -316,11 +334,62 @@ def compare(uid_a, uid_b):
     part_only_a = [p for p in part_a if p not in part_b]
     part_only_b = [p for p in part_b if p not in part_a]
 
+    # 白话结论: 先给"像不像"的判断, 再一句话说清两人各自是什么画像、交集在哪
+    def _top_tags(raw, n=2):
+        return [t for t, _ in sorted(raw.items(), key=lambda x: (-x[1], x[0]))[:n]]
+
+    if score is None:
+        summary = "数据不足,无法给出对比结论"
+        verdict_out = None
+        detail_out = None
+    elif not tag_a or not tag_b:
+        summary = "有一方缺少标签数据,无法对比"
+        verdict_out = None
+        detail_out = None
+    else:
+        ov_max = max(overlap_a or 0.0, overlap_b or 0.0)
+        ov_min = min(overlap_a or 0.0, overlap_b or 0.0)
+        if ov_max >= 0.45:
+            verdict = "兴趣高度相似"
+        elif ov_max >= 0.25:
+            verdict = "比较相似"
+        elif ov_max >= 0.10:
+            verdict = "共同点有限"
+        else:
+            verdict = "兴趣差异明显"
+        ta = "、".join("「%s」" % t for t in _top_tags(raw_a))
+        tb = "、".join("「%s」" % t for t in _top_tags(raw_b))
+        common_min = sorted(
+            ((min(raw_a[t], raw_b[t]), t) for t in set(raw_a) & set(raw_b)),
+            reverse=True,
+        )
+        sn = "、".join("「%s」" % t for _, t in common_min[:2])
+        if not shared:
+            clause = ",几乎找不到共同话题"
+        elif ov_min >= 0.45:
+            clause = ",核心兴趣(%s)高度重合" % sn
+        elif ov_max >= 0.25:
+            clause = ",共同关注%s" % sn
+        elif ov_max >= 0.10:
+            clause = ",仅在%s等少数话题有交集" % sn
+        else:
+            clause = ",共同话题(%s)只是各自兴趣的边缘" % sn
+        summary = "两人%s,相似度 %d%%:A 主要关注%s,B 主要关注%s%s。" % (
+            verdict, round((score or 0.0) * 100), ta, tb, clause
+        )
+        verdict_out = verdict
+        detail_out = "A 主要关注%s,B 主要关注%s%s。" % (ta, tb, clause)
+
     return {
         "score": round(score, 4) if score is not None else None,
         "level": level,
         "sample_a": sample_a,
         "sample_b": sample_b,
+        "summary": summary,
+        "verdict": verdict_out,
+        "detail": detail_out,
+        "overlap_a": round(overlap_a, 4) if overlap_a is not None else None,
+        "overlap_b": round(overlap_b, 4) if overlap_b is not None else None,
         "shared_tags": shared,
         "distinct_a": distinct_a,
         "distinct_b": distinct_b,

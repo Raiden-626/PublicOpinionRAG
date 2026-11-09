@@ -516,40 +516,83 @@
       background: var(--panel2)
     }
 
-    .sim-head {
+    .sim-conclusion {
+      margin: 2px 0 12px;
+      padding: 14px 16px;
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--brand);
+      border-radius: 10px
+    }
+
+    .sim-verdict {
       display: flex;
-      align-items: baseline;
-      gap: 10px;
+      align-items: center;
+      gap: 12px;
       flex-wrap: wrap
     }
 
-    .sim-score {
-      font-size: 28px;
+    .sim-verdict-chip {
+      font-size: 15px;
       font-weight: 700;
+      color: #fff;
+      background: var(--brand);
+      border-radius: 999px;
+      padding: 4px 16px
+    }
+
+    .sim-verdict-pct {
+      font-size: 21px;
+      font-weight: 800;
       color: var(--brand)
     }
 
-    .sim-level {
-      font-size: 12px;
-      color: var(--brand);
-      border: 1px solid #1a7a5a44;
-      border-radius: 999px;
-      padding: 1px 10px
+    .sim-desc {
+      font-size: 14px;
+      line-height: 1.75;
+      margin-top: 9px;
+      color: var(--text)
     }
 
-    .sim-bar {
-      height: 6px;
-      border-radius: 3px;
-      background: var(--border);
+    .sim-compose-bar {
+      display: flex;
+      height: 14px;
+      border-radius: 7px;
       overflow: hidden;
-      margin: 8px 0 4px
+      background: var(--border)
     }
 
-    .sim-bar>i {
+    .sim-compose-bar>i {
       display: block;
-      height: 100%;
-      background: var(--brand);
-      border-radius: 3px
+      height: 100%
+    }
+
+    .sim-compose-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 14px;
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .sim-compose-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px
+    }
+
+    .sim-compose-legend i {
+      width: 9px;
+      height: 9px;
+      border-radius: 3px;
+      display: inline-block
+    }
+
+    .sim-scoreline {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 8px
     }
 
     .sim-sub {
@@ -2833,15 +2876,48 @@
       const pct = hasScore ? (sim.score * 100) : 0;
 
       let h = '<div class="sim-box">';
-      h += '<div class="sim-head">';
-      h += '<div class="sim-score">' + (hasScore ? pct.toFixed(1) + '%' : '—') + '</div>';
-      if (sim.level) h += '<div class="sim-level">' + escapeHtml(sim.level) + '</div>';
-      h += '<div class="note" style="margin:0">兴趣相似度(标签向量余弦相似度 · 已按 IDF 抑制泛标签) · 有效样本 A ' + sim.sample_a + ' 条 / B ' + sim.sample_b + ' 条</div>';
-      h += '</div>';
 
-      if (hasScore) {
-        h += '<div class="sim-bar"><i style="width:' + Math.max(Math.round(pct), 2) + '%"></i></div>';
+      // 白话结论优先: 判定徽章 + 大号相似度 + 画像描述
+      if (sim.summary) {
+        if (sim.verdict && sim.detail) {
+          h += '<div class="sim-conclusion"><div class="sim-verdict">' +
+            '<span class="sim-verdict-chip">' + escapeHtml(sim.verdict) + '</span>' +
+            (hasScore ? '<span class="sim-verdict-pct">相似度 ' + pct.toFixed(0) + '%</span>' : '') +
+            '</div><div class="sim-desc">' + escapeHtml(sim.detail) + '</div></div>';
+        } else {
+          h += '<div class="sim-conclusion">' + escapeHtml(sim.summary) + '</div>';
+        }
       }
+
+      // 逐标签贡献构成条: 相似度分数由哪些共同标签拼出来
+      if (hasScore && sim.shared_tags && sim.shared_tags.length) {
+        const palette = ['var(--brand)', '#4f8dff', '#22b0a5', '#d9a514'];
+        const pts = sim.shared_tags.filter(t => t.point && t.point > 0);
+        if (pts.length) {
+          const segs = pts.slice(0, 4).map((t, i) => ({ tag: t.tag, point: t.point, color: palette[i % 4] }));
+          const rest = pts.slice(4).reduce((a, t) => a + t.point, 0);
+          if (rest > 0.05) segs.push({ tag: '其他', point: rest, color: 'var(--muted)' });
+          const totalPt = segs.reduce((a, s) => a + s.point, 0);
+          h += '<div class="sim-compose-bar">';
+          for (const s of segs) {
+            h += '<i style="width:' + (s.point / totalPt * 100).toFixed(1) + '%;background:' + s.color +
+              '" title="' + escapeHtml(s.tag) + ' 贡献 ' + s.point.toFixed(1) + ' 点"></i>';
+          }
+          h += '</div><div class="sim-compose-legend">';
+          for (const s of segs) {
+            h += '<span><i style="background:' + s.color + '"></i>' + escapeHtml(s.tag) + ' ' + s.point.toFixed(1) + '</span>';
+          }
+          h += '</div>';
+        }
+      }
+
+      // 原始口径退居次要(判定以结论为准, 不再展示旧的余弦等级, 避免两种口径打架)
+      h += '<div class="sim-scoreline">余弦相似度 ' + (hasScore ? pct.toFixed(1) + '%' : '—');
+      if (sim.overlap_a != null && sim.overlap_b != null) {
+        h += ' · A 兴趣重合率 ' + Math.round(sim.overlap_a * 100) + '% / B ' + Math.round(sim.overlap_b * 100) + '%';
+      }
+      h += ' · 有效样本 A ' + sim.sample_a + ' 条 / B ' + sim.sample_b + ' 条</div>';
+
       if (sim.note) {
         h += '<div class="note">' + escapeHtml(sim.note) + '</div>';
       }
