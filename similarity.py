@@ -269,6 +269,20 @@ def compare(uid_a, uid_b):
     score = cosine(tag_a, tag_b)
     level = _level_of(score)
 
+    # 百分位: 该分数在库内全体用户对中的相对位置(余弦分数是库相对量,
+    # 单看绝对值会低估/高估, 百分位给用户一个锚点)。失败不影响主结果。
+    percentile = None
+    if score is not None:
+        try:
+            import clustering as _clu
+            _uids = _clu._eligible_uids(state)
+            if len(_uids) >= 2:
+                _scores = _clu._pair_scores(state["vectors"], _uids)
+                if _scores:
+                    percentile = sum(1 for v in _scores.values() if v <= score) / len(_scores)
+        except Exception as e:
+            print(f"[similarity] 计算相似度百分位失败: {e}")
+
     notes = []
     if sample_a == 0:
         notes.append(f"UID {uid_a} 暂无可用的分区/标签数据(需先抓取入库并补全视频信息)")
@@ -383,6 +397,7 @@ def compare(uid_a, uid_b):
     return {
         "score": round(score, 4) if score is not None else None,
         "level": level,
+        "percentile": round(percentile, 3) if percentile is not None else None,
         "sample_a": sample_a,
         "sample_b": sample_b,
         "summary": summary,

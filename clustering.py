@@ -11,16 +11,32 @@
 
 群体分级:
   2 人 -> 兴趣对(pair), 3 人及以上 -> 群体(group);
-  若组内存在相似度低于阈值的一对(链式合并), 标记为松散群体(loose)。
+  若组内最弱一对低于弱关联档(链式合并), 标记为松散群体(loose)。
+
+阈值分档:
+  默认按库内全体用户对的分数分布动态划档(分位数 + 绝对下限取 max, 从严),
+  pair 太少或分布退化时回退固定阈值。余弦分数是"库内相对值", 库变化时
+  动态阈值会跟着走, 比手工常数可靠。
 
 数据来源统一走 similarity.load_state()(画像/向量/IDF 都来自 db.user_profile)。
 """
 
+import math
+
 import db
 import similarity
 
-# 默认相似度阈值(与 similarity.LEVELS 的「较为相似」档对齐)
-DEFAULT_THRESHOLD = 0.12
+# 兜底固定阈值(pair 太少或分布退化时使用, 与原手工分档一致)
+FALLBACK_THRESHOLDS = {"high": 0.30, "mid": 0.12, "weak": 0.05}
+
+# 动态阈值的绝对下限(从严): 无论分布如何, 各档不得低于此值
+ABS_FLOOR = {"high": 0.08, "mid": 0.05, "weak": 0.02}
+
+# 分布至少需要这么多 pair 才可靠(对应约 5 个用户)
+MIN_PAIRS_FOR_DYNAMIC = 10
+
+# 分布方差低于此值视为退化(所有 pair 分数几乎一样, 分位数失去意义)
+MIN_VAR = 1e-6
 
 # 3 人及以上算群体, 2 人算兴趣对
 GROUP_MIN_SIZE = 3
@@ -57,6 +73,66 @@ def _pair_scores(vectors, uids):
                 continue
             scores[(a, b)] = s
     return scores
+
+
+def _percentile(sorted_vals, q):
+    """升序列表的 q 分位(0~1), 线性插值。"""
+    n = len(sorted_vals)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return sorted_vals[0]
+    pos = q * (n - 1)
+    lo = int(math.floor(pos))
+    hi = min(n - 1, lo + 1)
+    frac = pos - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+
+def _thresholds_from_distribution(scores):
+    """按全库 pair 分数分布动态划档(从严: 分位数与绝对下限取 max)。
+
+    分布不可靠(pair 太少/方差退化)时回退固定阈值。
+    返回 {high, mid, weak, source, pairs, p50, p75, p90, p95}。
+    """
+    vals = sorted(scores.values())
+    n = len(vals)
+
+    def fixed():
+        out = dict(FALLBACK_THRESHOLDS)
+        out.update({"source": "fixed", "pairs": n})
+        return out
+
+    if n < MIN_PAIRS_FOR_DYNAMIC:
+        return fixed()
+    mean = sum(vals) / n
+    var = sum((v - mean) ** 2 for v in vals) / n
+    if var < MIN_VAR:
+        return fixed()
+
+    p50 = _percentile(vals, 0.50)
+    p75 = _percentile(vals, 0.75)
+    p90 = _percentile(vals, 0.90)
+    p95 = _percentile(vals, 0.95)
+    return {
+        "high": max(p95, ABS_FLOOR["high"]),
+        "mid": max(p90, ABS_FLOOR["mid"]),
+        "weak": max(p75, ABS_FLOOR["weak"]),
+        "source": "data",
+        "pairs": n,
+        "p50": p50, "p75": p75, "p90": p90, "p95": p95,
+    }
+
+
+def _level_of_dynamic(score, thr):
+    """动态档位: 高度相似 / 较相似 / 有交集 / 弱关联。"""
+    if score >= thr["high"]:
+        return "高度相似"
+    if score >= thr["mid"]:
+        return "较相似"
+    if score >= thr["weak"]:
+        return "有交集"
+    return "弱关联"
 
 
 def _union_find(uids):
@@ -100,8 +176,12 @@ def _group_name(members, vectors, df, n_users):
     return tags, detail
 
 
-def _build_group(members, scores, vectors, df, n_users, user_stats, threshold=DEFAULT_THRESHOLD):
-    """组装一个群体的输出结构。"""
+# 兼容旧调用: 默认连边阈值(app.py 在请求未显式指定时也不再传它)
+DEFAULT_THRESHOLD = FALLBACK_THRESHOLDS["mid"]
+
+
+def _build_group(members, scores, vectors, df, n_users, user_stats, thr):
+    """组装一个群体的输出结构。thr 为动态阈值 dict {high, mid, weak, ...}。"""
     pairs = []
     for i, a in enumerate(members):
         for b in members[i + 1:]:
@@ -110,7 +190,7 @@ def _build_group(members, scores, vectors, df, n_users, user_stats, threshold=DE
             if s is None:
                 continue
             pairs.append({"a": a, "b": b, "score": round(s, 4),
-                          "level": similarity._level_of(s)})
+                          "level": _level_of_dynamic(s, thr)})
     pairs.sort(key=lambda x: -x["score"])
 
     values = [p["score"] for p in pairs]
@@ -122,7 +202,7 @@ def _build_group(members, scores, vectors, df, n_users, user_stats, threshold=DE
     kind = "group" if len(members) >= GROUP_MIN_SIZE else "pair"
 
     notes = []
-    if min_pair < threshold:
+    if min_pair < thr["weak"]:
         notes.append("该组由相似关系链合并, 组内最弱的一对仅 %.1f%%" % (min_pair * 100))
 
     return {
@@ -167,17 +247,18 @@ def _user_stats():
         return {}
 
 
-def discover(threshold=DEFAULT_THRESHOLD, uid=None):
+def discover(threshold=None, uid=None):
     """发现兴趣群体。
 
     参数:
-      threshold: 相似度阈值, 达到该值的两个用户归为同组
+      threshold: 显式指定的连边阈值; 不传时按库内分布动态划档(推荐)。
       uid:       指定用户时, 只返回包含该用户的群体, 并附带其 Top 邻居
 
     返回 dict:
       {
-        "groups": [...],       # 群体列表
-        "threshold": float,
+        "groups": [...],       # 群体列表(pairs 的 level 用动态档位)
+        "threshold": float,    # 实际使用的连边阈值(动态时为 mid 档)
+        "thresholds": {...},   # 动态阈值与分布摘要 {high, mid, weak, source, ...}
         "user_count": int,     # 参与聚类的用户数
         "total_users": int,    # 库中用户总数
         "neighbors": [...],    # 指定 uid 时的 Top 相似邻居
@@ -190,9 +271,16 @@ def discover(threshold=DEFAULT_THRESHOLD, uid=None):
     stats = _user_stats()
 
     scores = _pair_scores(vectors, uids)
+    thr = _thresholds_from_distribution(scores)
+    if threshold is not None:
+        # 显式指定阈值时仍用固定分档措辞, 以该值为 mid
+        thr = dict(thr)
+        thr["mid"] = threshold
+        thr["source"] = "fixed"
+
     find, union = _union_find(uids)
     for (a, b), s in scores.items():
-        if s >= threshold:
+        if s >= thr["mid"]:
             union(a, b)
 
     buckets = {}
@@ -204,7 +292,7 @@ def discover(threshold=DEFAULT_THRESHOLD, uid=None):
         if len(members) < 2:
             continue
         groups.append(_build_group(sorted(members), scores, vectors, state["df"],
-                                   len(uids), stats, threshold))
+                                   len(uids), stats, thr))
     groups.sort(key=lambda g: (-g["size"], -g["cohesion"]))
 
     neighbors = []
@@ -220,7 +308,7 @@ def discover(threshold=DEFAULT_THRESHOLD, uid=None):
             if other is None:
                 continue
             neighbors.append({"uid": other, "score": round(s, 4),
-                               "level": similarity._level_of(s)})
+                               "level": _level_of_dynamic(s, thr)})
         neighbors.sort(key=lambda x: -x["score"])
         neighbors = neighbors[:5]
 
@@ -228,12 +316,21 @@ def discover(threshold=DEFAULT_THRESHOLD, uid=None):
     if len(uids) < similarity.MIN_IDF_USERS:
         notes.append("入库用户不足 %d 个, IDF 加权与聚类结果仅供参考"
                      % similarity.MIN_IDF_USERS)
+    if thr["source"] == "fixed":
+        notes.append("库内用户对样本不足, 使用默认阈值分档")
     if len(groups) == 0:
-        notes.append("当前阈值 %.0f%% 下没有发现相似群体" % (threshold * 100))
+        notes.append("当前阈值 %.0f%% 下没有发现相似群体" % (thr["mid"] * 100))
 
     return {
         "groups": groups,
-        "threshold": threshold,
+        "threshold": thr["mid"],
+        "thresholds": {
+            "high": round(thr["high"], 4),
+            "mid": round(thr["mid"], 4),
+            "weak": round(thr["weak"], 4),
+            "source": thr["source"],
+            "pairs": thr["pairs"],
+        },
         "user_count": len(uids),
         "total_users": len(stats),
         "neighbors": neighbors,

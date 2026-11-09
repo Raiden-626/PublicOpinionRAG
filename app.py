@@ -646,17 +646,21 @@ def api_clusters():
     """兴趣群体发现(第二层): 基于标签向量余弦相似度的阈值连通分量聚类。
 
     参数:
-      threshold: 相似度阈值(默认 0.12)
+      threshold: 可选, 显式指定连边阈值; 不传时按库内分布动态划档
       uid:       指定用户时只返回包含他的群体, 并附带其 Top 相似邻居
     """
     import clustering
 
-    try:
-        threshold = float(request.args.get("threshold", "") or clustering.DEFAULT_THRESHOLD)
-    except ValueError:
-        threshold = clustering.DEFAULT_THRESHOLD
-    if not (0 < threshold <= 1):
-        return _json({"error": "threshold 必须在 0~1 之间"}, 400)
+    threshold = (request.args.get("threshold") or "").strip()
+    if threshold:
+        try:
+            threshold = float(threshold)
+        except ValueError:
+            return _json({"error": "threshold 必须为数字"}, 400)
+        if not (0 < threshold <= 1):
+            return _json({"error": "threshold 必须在 0~1 之间"}, 400)
+    else:
+        threshold = None  # 不指定时按库内分布动态划档
 
     uid = (request.args.get("uid") or "").strip()
     if uid and not uid.isdigit():
@@ -784,6 +788,7 @@ if __name__ == "__main__":
     import webbrowser
 
     # 延迟 1.5 秒打开浏览器,等 Flask 启动就绪
-    threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:5000/")).start()
+    port = int(os.getenv("PORT", "5000"))
+    threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:%d/" % port)).start()
     # threaded=True: 抓取耗时1-2分钟,长请求不阻塞其他请求
-    app.run(host="127.0.0.1", port=5000, threaded=True, debug=False)
+    app.run(host="127.0.0.1", port=port, threaded=True, debug=False)

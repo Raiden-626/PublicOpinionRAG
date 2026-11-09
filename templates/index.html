@@ -2319,9 +2319,11 @@
         if (!r.ok) throw new Error(j.error);
         clusterGroups = j.groups || [];
         const pct = Math.round((j.threshold || 0) * 100);
+        const dyn = j.thresholds && j.thresholds.source === "data";
         $("recordClustersMeta").textContent =
           (clusterGroups.length ? clusterGroups.length + " 组 · " : "") +
-          "阈值 " + pct + "% · 参与聚类 " + j.user_count + "/" + j.total_users + " 人";
+          "阈值 " + pct + (dyn ? "%(按库内分布, 较相似=前10%的用户对)" : "%(默认)") +
+          " · 参与聚类 " + j.user_count + "/" + j.total_users + " 人";
         renderClusters();
       } catch (e) {
         bd.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
@@ -2915,6 +2917,9 @@
       h += '<div class="sim-scoreline">余弦相似度 ' + (hasScore ? pct.toFixed(1) + '%' : '—');
       if (sim.overlap_a != null && sim.overlap_b != null) {
         h += ' · A 兴趣重合率 ' + Math.round(sim.overlap_a * 100) + '% / B ' + Math.round(sim.overlap_b * 100) + '%';
+      }
+      if (sim.percentile != null) {
+        h += ' · 超过库内 ' + Math.round(sim.percentile * 100) + '% 的用户对';
       }
       h += ' · 有效样本 A ' + sim.sample_a + ' 条 / B ' + sim.sample_b + ' 条</div>';
 
