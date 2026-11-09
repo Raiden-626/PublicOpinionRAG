@@ -1309,7 +1309,7 @@
         <button class="landing-card" onclick="showView('expand')">
           <div class="lc-icon">📥</div>
           <div class="lc-title">批量抓取</div>
-          <div class="lc-desc">候选发现(UP主/评论区/手动) → 池调度 → 批量入库, 实时日志</div>
+          <div class="lc-desc">发现候选(UP主/评论区) → 候选池 → 批量入库, 实时日志</div>
         </button>
       </div>
     </div>
@@ -1578,8 +1578,9 @@
       <div class="backfill-panel">
         <h2>批量抓取(扩库)</h2>
         <p class="backfill-desc">
-          候选发现 → 池调度 → 批量入库(评论+弹幕, MySQL+向量库)。抓取顺序: 手动清单 &gt; UP主 &gt; 评论区挖掘;
-          失败自动重试3次; 停止或中断后重跑可续。
+          三步: ① 从两个来源发现候选用户并放入候选池 → ② 点"启动批量抓取"后系统逐个抓取入库(评论+弹幕, MySQL+向量库)
+          → ③ 在"候选池"面板看进度, "运行日志"面板看每一步细节。失败自动重试3次; 点"停止任务"时当前用户抓完即停;
+          中断后重新启动可续跑, 不会重复入库。
         </p>
 
         <!-- 操作条 -->
@@ -1748,25 +1749,20 @@
           .map(c => c.uid + '(' + c.refs + '次)').join('、') || '暂无满足条件的候选';
         const replyPreview = (d.reply.videos || []).slice(0, 3)
           .map(v => 'oid=' + v.oid + '(' + v.refs + '次)').join('、') || '库内暂无可用视频';
-        const manualPreview = d.manual.file_exists
-          ? ((d.manual.uids || []).length + ' 个 uid') : 'uid_pool.txt 不存在(可用下方输入框)';
-        const row = (icon, title, pri, logic, preview, btnHtml) => `
+        const row = (no, icon, title, pri, logic, preview, btnHtml) => `
           <div style="display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px solid #eef1f6">
-            <div style="min-width:150px">${icon} ${title} <span class="meta">${pri}</span></div>
+            <div style="min-width:170px">${icon} <b>${no} ${title}</b><br><span class="meta">${pri}</span></div>
             <div style="flex:1;color:var(--muted);font-size:13px;line-height:1.6">${logic}
               <br><span style="color:#8a93a6">当前候选: ${preview}</span></div>
             <div style="min-width:90px;text-align:right">${btnHtml || ''}</div>
           </div>`;
         box.innerHTML =
-          row('🎥', 'UP主', '优先级 50', d.owners.desc, ownersPreview,
+          row('来源1', '🎥', 'UP主', '先抓(优先级50)', d.owners.desc, ownersPreview,
               `<button class="bo-btn" id="btnDiscoverOwners" onclick="runDiscover('owners')">发现</button>`) +
-          row('💬', '评论区挖掘', '优先级 100', d.reply.desc, replyPreview,
+          row('来源2', '💬', '评论区挖掘', '后抓(优先级100, 较慢)', d.reply.desc, replyPreview,
               `<button class="bo-btn" id="btnDiscoverReply" onclick="runDiscover('reply')">发现</button>`) +
-          row('📝', '手动清单', '优先级 20', d.manual.desc, manualPreview, '') +
-          `<div style="display:flex;gap:10px;align-items:center;padding:12px 0 2px">
-             <input id="expandManualUids" type="text" placeholder="手动添加 uid, 逗号/换行分隔, 如 123456,789012"
-                    style="flex:1;padding:8px 12px;border:1px solid #d7dce5;border-radius:8px" />
-             <button class="bo-btn" onclick="addManualUids()">加入候选池</button>
+          `<div style="padding:12px 0 2px;color:var(--muted);font-size:13px">
+             点"发现"只会把候选放入池中, 不会抓取数据; 之后点顶部"启动批量抓取"才开始抓取。
            </div>`;
       } catch (e) {
         box.innerHTML = `<div class="err" style="padding:16px">加载失败: ${e.message}</div>`;
@@ -1795,21 +1791,6 @@
       } finally {
         if (btn) btn.disabled = false;
       }
-    }
-
-    async function addManualUids() {
-      const raw = $('expandManualUids').value.trim();
-      if (!raw) { $('expandStatus').textContent = '请先输入 uid'; return; }
-      const resp = await fetch('/api/expand/discover', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: 'manual', uids: raw })
-      });
-      const d = await resp.json();
-      if (d.error) { $('expandStatus').textContent = d.error; return; }
-      $('expandManualUids').value = '';
-      $('expandStatus').textContent = '已加入候选池';
-      loadExpandPool();
-      loadExpandPreview();
     }
 
     async function startExpand() {
@@ -1857,8 +1838,8 @@
           box.scrollTop = box.scrollHeight;
           expandLogOffset = d.offset;
         }
-        const KIND_LABEL = { owners: '发现(UP主)', reply: '发现(评论区)', manual: '发现(手动)', expand: '批量抓取' };
-        const SOURCE_LABEL = { owner: 'UP主', reply_api: '评论区', manual: '手动' };
+        const KIND_LABEL = { owners: '发现(UP主)', reply: '发现(评论区)', expand: '批量抓取' };
+        const SOURCE_LABEL = { owner: 'UP主', reply_api: '评论区', manual: '手动(已弃用)' };
         const state = d.running
           ? (d.cancel ? '停止中…' : '运行中')
           : (d.error ? `失败: ${d.error}` : '空闲');

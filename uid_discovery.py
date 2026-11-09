@@ -1,28 +1,21 @@
 """候选 uid 发现: 从库内数据与 B站评论区挖掘待入库用户, 写入 uid_pool 表。
 
-三个来源:
-  1. owners    — 库内评论表的 video_owner_uid(UP主), 零成本, 优先级最高
+两个来源:
+  1. owners    — 库内评论表的 video_owner_uid(UP主), 零成本
   2. reply_api — 挑库内高频 oid, 用 B站评论接口拉评论区, 提取评论者 uid
                  (与库内兴趣分布最贴近, 限流 3s/次)
-  3. manual    — 手动清单 uid_pool.txt, 每行一个 uid
 
 用法(经 main.py):
     python main.py discover owners --limit 200
     python main.py discover reply --top-videos 20 --per-video 2
-    python main.py discover manual --file uid_pool.txt
     python main.py pool                     # 查看池状态
 """
 
-import os
-import re
 import time
 
 import pymysql
 
 import db
-
-# 手动清单默认路径(相对项目根)
-_MANUAL_FILE = "uid_pool.txt"
 
 # ---- B站评论接口(独立于 ingest 的 1.2s 限流, 评论区挖掘用更保守的 3s) ----
 _UA = (
@@ -246,38 +239,11 @@ def discover_from_reply_api(top_videos=20, per_video_pages=2, per_video_cap=50,
     return added
 
 
-def read_manual_file(path=None):
-    """读取手动清单(只读, 页面预览用)。返回 (exists, [uid,...])。"""
-    path = path or _MANUAL_FILE
-    if not os.path.exists(path):
-        return False, []
-    uids = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if re.fullmatch(r"\d+", line):
-                uids.append(int(line))
-    return True, uids
-
-
-def discover_from_manual(path=None):
-    """来源3: 手动清单(或页面直接传来的 uid 列表)。返回入池条数。"""
-    path = path or _MANUAL_FILE
-    exists, uids = read_manual_file(path)
-    if not exists:
-        print(f"[discover-manual] 清单不存在: {path}")
-        return 0
-    # 手动指定的优先级最高(用户明确意图)
-    added = db.pool_add_uids(uids, source="manual", priority=20)
-    print(f"[discover-manual] 清单 {len(uids)} 个, 新入池 {added} 个")
-    return added
-
-
 if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="候选 uid 发现")
-    ap.add_argument("source", choices=["owners", "reply", "manual"])
+    ap.add_argument("source", choices=["owners", "reply"])
     ap.add_argument("--limit", type=int, default=200, help="owners 最大入池数")
     ap.add_argument("--min-refs", type=int, default=2,
                     help="owners 最少引用次数")
@@ -285,16 +251,13 @@ if __name__ == "__main__":
                     help="reply 挖掘的视频数")
     ap.add_argument("--pages", type=int, default=2, help="reply 每视频页数")
     ap.add_argument("--cap", type=int, default=50, help="reply 每视频uid上限")
-    ap.add_argument("--file", default=None, help="manual 清单路径")
     args = ap.parse_args()
 
     if args.source == "owners":
         discover_from_owners(limit=args.limit, min_refs=args.min_refs)
-    elif args.source == "reply":
+    else:
         discover_from_reply_api(
             top_videos=args.top_videos,
             per_video_pages=args.pages,
             per_video_cap=args.cap,
         )
-    else:
-        discover_from_manual(args.file)

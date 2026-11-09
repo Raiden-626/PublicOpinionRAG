@@ -609,30 +609,25 @@ def _start_expand_job(kind, func, args=(), kwargs=None):
 
 @app.route("/api/expand/preview")
 def api_expand_preview():
-    """三个候选来源的选取逻辑说明 + 当前实际候选数据(只读,不写池)。"""
+    """两个候选来源的选取逻辑说明 + 当前实际候选数据(只读,不写池)。"""
     import uid_discovery
 
     owners = uid_discovery.owners_ranking(limit=20, min_refs=2)
     videos = uid_discovery._top_oids(10)
-    manual_exists, manual_uids = uid_discovery.read_manual_file()
 
     return _json({
-        "priority_order": ["manual(20)", "owner(50)", "reply_api(100)"],
+        "priority_order": ["owner(50)", "reply_api(100)"],
         "owners": {
-            "desc": "库内评论表的 video_owner_uid, 按被库内评论引用次数降序, "
-                    "引用≥2 才入选(过滤冷门UP主)",
+            "desc": "谁入选: 库内已有用户评论过的视频的UP主。"
+                    "怎么排: 被库内评论引用≥2次才入选, 引用越多越靠前。"
+                    "作用: 补充库内用户关注的创作者视角。",
             "candidates": [{"uid": u, "refs": c} for u, c in owners],
         },
         "reply": {
-            "desc": "库内跨用户被评论最多的视频(排除失效), 拉其评论区提取评论者 uid; "
-                    "每个视频最多取 50 个, 按热度排序截断",
+            "desc": "谁入选: 库内用户评论最多的热门视频的评论区里, 其他评论者的uid。"
+                    "怎么排: 视频按库内被评论次数从高到低, 每个视频取热度前50条评论者。"
+                    "作用: 补充与库内兴趣最相近的活跃用户, 3秒/请求较慢。",
             "videos": [{"oid": oid, "refs": c} for oid, c in videos],
-        },
-        "manual": {
-            "desc": "手动清单 uid_pool.txt, 每行一个 uid, # 为注释; "
-                    "优先级最高, expand 时最先抓取",
-            "file_exists": manual_exists,
-            "uids": manual_uids[:100],
         },
         "pool_stats": db.pool_stats(),
     })
@@ -640,9 +635,7 @@ def api_expand_preview():
 
 @app.route("/api/expand/discover", methods=["POST"])
 def api_expand_discover():
-    """运行候选发现(后台): source=owners/reply/manual。
-    manual 支持直接传 uids 列表(页面输入框), 不依赖清单文件。
-    """
+    """运行候选发现(后台): source=owners/reply。"""
     data = request.json or {}
     source = data.get("source", "")
     import uid_discovery
@@ -659,25 +652,8 @@ def api_expand_discover():
              int(data.get("cap", 50))),
             kwargs={"should_stop": _expand_cancelled},
         )
-    elif source == "manual":
-        uids = data.get("uids") or []
-        if isinstance(uids, str):
-            uids = [u.strip() for u in uids.replace(",", "\n").split("\n")]
-        uids = [int(u) for u in uids if str(u).strip().isdigit()]
-        if not uids:
-            return _json({"error": "请输入至少一个数字 uid"}, 400)
-        err = _start_expand_job(
-            "manual",
-            lambda: None if db.pool_add_uids(uids, "manual", 20) else None,
-        )
-        # manual 无 print 产物, 直接记录结果
-        if not err:
-            with _expand_lock:
-                _expand_job["log"].append(
-                    f"[manual] 输入 {len(uids)} 个 uid, 完成后看池状态"
-                )
     else:
-        return _json({"error": "source 必须是 owners/reply/manual"}, 400)
+        return _json({"error": "source 必须是 owners/reply"}, 400)
 
     if err:
         return _json(err, 409)
@@ -707,7 +683,7 @@ def api_expand_cancel():
     with _expand_lock:
         if not _expand_job["running"]:
             return _json({"error": "当前没有运行中的任务"}, 400)
-        if _expand_job["kind"] in ("owners", "manual"):
+        if _expand_job["kind"] == "owners":
             return _json({"error": "该发现任务通常几秒内完成, 无需停止"}, 400)
         _expand_job["cancel"] = True
         kind = _expand_job["kind"]
