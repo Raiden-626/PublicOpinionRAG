@@ -32,6 +32,10 @@ COLLECTION = os.getenv("CHROMA_COLLECTION", "bilibili_comments")
 
 # ---- 检索参数 ----
 TOP_K = int(os.getenv("TOP_K", "8"))
+# 混合检索的重排模型: bge-reranker-v2-m3, 由 SiliconFlow /rerank 接口提供
+# 设 RERANK_ENABLED=0 可关闭重排(回退到向量距离排序)
+RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 
 # ---- 失效视频跳过 ----
 # 开启后: B站接口确认"稿件不可见/已删除"(code=62002 / -404)的视频会被记入 dead_video 表;

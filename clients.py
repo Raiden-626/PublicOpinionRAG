@@ -1,8 +1,8 @@
-"""SiliconFlow API 客户端: 文本向量化(bge-large-zh) + LLM 对话(DeepSeek)。"""
+"""SiliconFlow API 客户端: 文本向量化(bge-large-zh) + LLM 对话(DeepSeek) + 重排。"""
 import json
 
 import requests
-from config import API_KEY, API_BASE, LLM_MODEL, EMBED_MODEL
+from config import API_KEY, API_BASE, LLM_MODEL, EMBED_MODEL, RERANK_MODEL
 
 _HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
@@ -28,6 +28,32 @@ def embed(texts):
     data.sort(key=lambda x: x["index"])  # 按 index 排序保证与输入顺序一致
     vecs = [d["embedding"] for d in data]
     return vecs[0] if single else vecs
+
+
+def rerank(query, documents, top_n=None, timeout=30):
+    """重排: 用 bge-reranker 对 query 与候选文档打相关性分。
+    返回 [{"index": i, "relevance_score": s}, ...](按分数降序, index 为 documents 下标)。
+    失败时返回 None, 由调用方回退到原始排序。
+    """
+    if not documents:
+        return None
+    try:
+        resp = requests.post(
+            f"{API_BASE}/rerank",
+            headers=_HEADERS,
+            json={
+                "model": RERANK_MODEL,
+                "query": query,
+                "documents": documents,
+                "top_n": top_n or len(documents),
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["results"]
+    except Exception as e:
+        print(f"[rerank] 重排失败, 回退到向量距离排序: {e}")
+        return None
 
 
 def chat_stream(messages, temperature=0.3, max_tokens=2048, timeout=300):

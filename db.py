@@ -721,6 +721,23 @@ def fetch_rows(kind, uid, ids):
         conn.close()
 
 
+# ---- 关键词召回(混合检索用)----
+def fetch_all_contents(kind, uid):
+    """取该 uid 表全部行的 id/content/ctime,供检索侧做关键词匹配打分。
+    表不存在时返回空 list。
+    """
+    tbl = table_for(kind, uid)
+    conn = get_conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(f"SELECT id, content, ctime FROM `{tbl}`", ())
+            return cur.fetchall()
+    except pymysql.err.ProgrammingError:
+        return []
+    finally:
+        conn.close()
+
+
 # ---- 向量化一致性辅助 ----
 def fetch_all_ids(kind, uid):
     """返回 MySQL 中某 uid 表的全部主键 id 列表。"""

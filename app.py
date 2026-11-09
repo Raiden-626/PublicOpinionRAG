@@ -19,6 +19,7 @@
 
 import os
 import json
+import hashlib
 import threading
 import time
 from datetime import datetime
@@ -72,17 +73,49 @@ def _json(obj, status=None):
 _tasks = {}
 _tasks_lock = threading.Lock()
 
+# 已结束任务在内存中保留的时长(秒),超时清理防止 _tasks 无限增长
+_TASK_TTL = 3600
+# 任务字典容量上限,超过时优先清理最早结束的已结束任务
+_TASK_MAX = 100
 
-def _run_task(task_key, gen_func, *args, extra_capture=None, **kwargs):
+
+def _prune_tasks():
+    """清理过期任务。必须在持有 _tasks_lock 时调用。"""
+    now = time.time()
+    # 过期清理
+    stale = [
+        k
+        for k, v in _tasks.items()
+        if v["status"] in ("done", "failed")
+        and now - v.get("finished", v.get("updated", 0)) > _TASK_TTL
+    ]
+    for k in stale:
+        del _tasks[k]
+    # 容量兜底: 超限时删掉最早结束的已结束任务(运行中的不动)
+    if len(_tasks) > _TASK_MAX:
+        finished = sorted(
+            (
+                (v.get("finished", v.get("updated", 0)), k)
+                for k, v in _tasks.items()
+                if v["status"] in ("done", "failed")
+            ),
+        )
+        for _, k in finished[: len(_tasks) - _TASK_MAX]:
+            del _tasks[k]
+
+
+def _run_task(task_key, gen_func, *args, **kwargs):
     """后台线程: 运行生成器,累积文本到 _tasks[task_key]。
-    extra_capture: 生成结束后要从函数对象上读取的属性名列表(如 ['sources'])。
+    生成器的运行产物(如 ask 的 sources、report 的 used)写入 result dict,
+    结束后并入任务 entry 的 extra 字段,供 /api/task 返回。
     """
     with _tasks_lock:
         entry = _tasks.get(task_key)
     if entry is None:
         return
+    result = {}
     try:
-        for token in gen_func(*args, **kwargs):
+        for token in gen_func(*args, result=result, **kwargs):
             with _tasks_lock:
                 cur = _tasks.get(task_key)
                 # 任务已被新一次生成替换(force), 放弃本次输出
@@ -92,20 +125,14 @@ def _run_task(task_key, gen_func, *args, extra_capture=None, **kwargs):
                     return
                 cur["text"] += token
                 cur["updated"] = time.time()
-        # 捕获额外数据(如 ask_stream.sources)
-        extra = {}
-        if extra_capture:
-            for attr in extra_capture:
-                val = getattr(gen_func, attr, None)
-                if val is not None:
-                    extra[attr] = val
         with _tasks_lock:
             cur = _tasks.get(task_key)
             if cur is not entry:
                 return
-            if extra:
-                cur["extra"] = extra
+            if result:
+                cur["extra"] = result
             cur["status"] = "done"
+            cur["finished"] = time.time()
             cur["updated"] = time.time()
     except Exception as e:
         with _tasks_lock:
@@ -113,12 +140,16 @@ def _run_task(task_key, gen_func, *args, extra_capture=None, **kwargs):
             if cur is entry:
                 cur["status"] = "failed"
                 cur["error"] = str(e)
+                cur["finished"] = time.time()
                 cur["updated"] = time.time()
 
 
 @app.route("/api/task")
 def api_task():
-    """轮询任务状态。返回 {status, text, counts, error?, extra?}。"""
+    """轮询任务状态。返回 {status, text, offset, counts, error?, extra?}。
+    支持 offset 增量拉取: 只返回 text[offset:], offset 为当前全量文本长度。
+    不传 offset 时返回全量 text(向后兼容)。
+    """
     task_key = request.args.get("task_id", "").strip()
     if not task_key:
         return _json({"error": "缺少 task_id"}, 400)
@@ -126,9 +157,16 @@ def api_task():
         entry = _tasks.get(task_key)
     if not entry:
         return _json({"error": "任务不存在"}, 404)
+    full_text = entry["text"]
+    try:
+        offset = int(request.args.get("offset", "0"))
+    except ValueError:
+        offset = 0
+    offset = max(0, min(offset, len(full_text)))
     resp = {
         "status": entry["status"],
-        "text": entry["text"],
+        "text": full_text[offset:],
+        "offset": len(full_text),
         "counts": entry.get("counts") or {},
     }
     if entry.get("error"):
@@ -190,7 +228,7 @@ def api_ingest():
 # ---- 后台任务端点(刷新不丢失) ----
 
 
-def _start_or_reconnect(task_key, gen_func, args, counts, extra_capture=None, force=False):
+def _start_or_reconnect(task_key, gen_func, args, counts, force=False):
     """查找已有任务或创建新任务。返回 (task_key, entry)。
 
     force=True: 用户主动再次点击按钮, 即使上次已完成也重新生成一次。
@@ -198,6 +236,7 @@ def _start_or_reconnect(task_key, gen_func, args, counts, extra_capture=None, fo
     运行中的任务无论如何都只重连, 不并发启动第二个。
     """
     with _tasks_lock:
+        _prune_tasks()
         existing = _tasks.get(task_key)
         if existing and existing["status"] == "running":
             return task_key, existing
@@ -213,12 +252,7 @@ def _start_or_reconnect(task_key, gen_func, args, counts, extra_capture=None, fo
             "updated": time.time(),
         }
         _tasks[task_key] = entry
-    t = threading.Thread(
-        target=_run_task,
-        args=(task_key, gen_func, *args),
-        kwargs={"extra_capture": extra_capture} if extra_capture else {},
-        daemon=True,
-    )
+    t = threading.Thread(target=_run_task, args=(task_key, gen_func, *args), daemon=True)
     t.start()
     return task_key, entry
 
@@ -319,6 +353,7 @@ def api_ask():
                             "mysql_table": table,
                             "mysql_id": row["id"],
                             "oid": row.get("oid") or 0,
+                            "ctime_ts": row["ctime"].timestamp() if row.get("ctime") else 0,
                         }
                     )
                     # 嵌入文本包含日期,帮助时间相关查询匹配
@@ -351,14 +386,16 @@ def api_ask():
             400,
         )
 
-    task_key = f"ask_{uid}_{question}"
+    # task_key 用问题的哈希而非原文: 避免中文/特殊字符问题串进 key,
+    # 也能保证同一问题刷新后重连到同一任务
+    q_hash = hashlib.md5(question.encode("utf-8")).hexdigest()[:12]
+    task_key = f"ask_{uid}_{q_hash}"
     force = bool((request.json or {}).get("force"))
     _, entry = _start_or_reconnect(
         task_key,
         generate.ask_stream,
         (question, uid),
         counts,
-        extra_capture=["sources"],
         force=force,
     )
     resp = {
@@ -432,6 +469,7 @@ def api_re_embed():
                         "mysql_table": table,
                         "mysql_id": row["id"],
                         "oid": row.get("oid") or 0,
+                        "ctime_ts": row["ctime"].timestamp() if row.get("ctime") else 0,
                     }
                 )
                 # 嵌入文本包含日期, 与入库时保持一致

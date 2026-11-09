@@ -59,19 +59,25 @@ def query(query_embedding, top_k=8, where=None):
     return out
 
 
-def query_by_uid(query_embedding, uid, top_k=8):
+def query_by_uid(query_embedding, uid, top_k=8, where_extra=None):
     """按 uid 过滤的语义检索。优先用 Chroma where 子句精确过滤(uid 为 int64),
     若过滤后为空(老数据 uid 存成字符串时匹配不上),再回退到"多取候选 + Python 侧过滤"。
+    where_extra: 额外的 Chroma 过滤条件 list,如 [{"ctime_ts": {"$gte": 1700000000}}]。
+    回退路径会在 Python 侧按同样条件过滤(仅支持 $gte/$lte)。
     返回 list[dict]: {id, document, metadata, distance}。
     """
     uid_int = int(uid)
+
+    where = {"uid": uid_int}
+    if where_extra:
+        where = {"$and": [{"uid": uid_int}] + list(where_extra)}
 
     # 优先:Chroma 原生过滤,召回准确且不会被全局 top-k 截断
     try:
         res = _collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
-            where={"uid": uid_int},
+            where=where,
         )
         out = []
         for i in range(len(res["ids"][0])):
@@ -99,6 +105,8 @@ def query_by_uid(query_embedding, uid, top_k=8):
         u = m.get("uid")
         if u != uid_int and u != uid_str:
             continue
+        if where_extra and not _match_range_filters(m, where_extra):
+            continue
         out.append({
             "id": res["ids"][0][i],
             "document": res["documents"][0][i],
@@ -108,6 +116,20 @@ def query_by_uid(query_embedding, uid, top_k=8):
         if len(out) >= top_k:
             break
     return out
+
+
+def _match_range_filters(metadata, where_extra):
+    """Python 侧匹配 $gte/$lte 范围条件。字段缺失视为不匹配。"""
+    for cond in where_extra:
+        for key, op in cond.items():
+            v = metadata.get(key)
+            if v is None:
+                return False
+            if "$gte" in op and v < op["$gte"]:
+                return False
+            if "$lte" in op and v > op["$lte"]:
+                return False
+    return True
 
 
 def _get_all():

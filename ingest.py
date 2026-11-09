@@ -1020,6 +1020,7 @@ def ingest_uid(
                     "mysql_table": table,
                     "mysql_id": int(mysql_id),
                     "oid": rec.get("oid") or 0,
+                    "ctime_ts": rec["ctime"].timestamp() if rec.get("ctime") else 0,
                 }
             )
             # 嵌入文本包含日期,帮助时间相关查询匹配

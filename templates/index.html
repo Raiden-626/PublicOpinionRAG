@@ -1772,10 +1772,10 @@
         meta.textContent = "耗时 " + elapsed + "s";
       }
 
-      let lastLen = 0, started = false;
+      let full = "", offset = 0, started = false;
       const poll = async () => {
         try {
-          const r2 = await fetch('/api/task?task_id=' + encodeURIComponent(taskId));
+          const r2 = await fetch('/api/task?task_id=' + encodeURIComponent(taskId) + '&offset=' + offset);
           let d = {};
           try { d = await r2.json(); } catch (e) { d = {}; }
           if (!r2.ok) {
@@ -1786,21 +1786,23 @@
             return;
           }
           if (d.status === "running") {
-            // 增量渲染
-            if (d.text && d.text.length > lastLen) {
+            // 增量渲染: 只拉取新增部分,本地累积后整体重渲染
+            if (d.text) {
+              full += d.text;
               if (!started) { started = true; bd.innerHTML = ""; }
-              renderMd(bd, d.text);
-              lastLen = d.text.length;
+              renderMd(bd, full);
             }
+            offset = (d.offset != null) ? d.offset : full.length;
             setTimeout(poll, 500);
           } else if (d.status === "done") {
             stopTimer();
-            if (d.text) {
-              renderMd(bd, d.text);
+            if (d.text) { full += d.text; }
+            if (full) {
+              renderMd(bd, full);
             } else {
               bd.innerHTML = '<div class="err">生成完成但内容为空</div>';
             }
-            if (onDone) onDone(d, d.text || "");
+            if (onDone) onDone(d, full);
             ssClearTask(taskId);
             unlockBtn(btnId);
           } else if (d.status === "failed") {

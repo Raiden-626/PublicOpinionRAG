@@ -125,11 +125,12 @@ def _fmt_profile(uid):
 # ---- 流式生成函数 ----
 
 
-def recent_focus_stream(uid, sample_n=200):
+def recent_focus_stream(uid, sample_n=200, result=None):
     """功能2: 最近在关注的内容。生成器 yield str token。
 
     取该 uid 最近 sample_n 条评论 + 弹幕(按时间倒序),
     去重后截断至 4000 字符,流式调用 DeepSeek 归纳。
+    result: 可选 dict, 运行产物写入其中(如 used), 供调用方在生成结束后读取。
     """
     comments = db.fetch_sample("comment", uid, sample_n)
     danmu = db.fetch_sample("danmu", uid, sample_n)
@@ -153,7 +154,8 @@ def recent_focus_stream(uid, sample_n=200):
         "请结合上方画像统计数据(分区分布和标签分布)进行更精准的分析。\n"
         "用中文,结构化,基于给定数据,不编造。"
     )
-    recent_focus_stream.used = used_lines
+    if result is not None:
+        result["used"] = used_lines
 
     # 累积文本并在生成完成后保存历史记录
     full_text = []
@@ -176,11 +178,12 @@ def recent_focus_stream(uid, sample_n=200):
         pass  # 保存失败不影响主流程
 
 
-def report_stream(uid, sample_n=400):
+def report_stream(uid, sample_n=400, result=None):
     """功能3: 舆情分析报告。生成器 yield str token。
 
     取该 uid 最近 sample_n 条评论 + 弹幕,去重后截断至 4500 字符,
     DeepSeek 出领域画像与行为预测。
+    result: 可选 dict, 运行产物写入其中(如 used), 供调用方在生成结束后读取。
     """
     comments = db.fetch_sample("comment", uid, sample_n)
     danmu = db.fetch_sample("danmu", uid, sample_n)
@@ -211,7 +214,8 @@ def report_stream(uid, sample_n=400):
         "请结合上方画像统计数据(分区分布和标签分布)进行更精准的分析。\n"
         "用中文,Markdown 结构化输出,严格基于给定数据,不编造。"
     )
-    report_stream.used = used_lines
+    if result is not None:
+        result["used"] = used_lines
 
     # 累积文本并在生成完成后保存历史记录
     full_text = []
@@ -237,13 +241,11 @@ def report_stream(uid, sample_n=400):
 # ---- RAG 问答 ----
 
 
-def ask_stream(question, uid, top_k=None):
+def ask_stream(question, uid, top_k=None, result=None):
     """对该 uid 的语料做 RAG 问答。生成器 yield str token。
-    调用方可在生成结束后读取 .sources 属性获取来源。
+    result: 可选 dict, 生成结束后写入 result["sources"](来源列表),
+    由调用方传入独立 dict, 避免函数属性在并发下互相覆盖。
     """
-    # 先清空上一次残留的来源,避免本次提前返回时带着旧数据
-    ask_stream.sources = []
-
     results = retrieve(question, uid, top_k=top_k or 8)
     ctx = build_context(results)
     if not ctx:
@@ -271,10 +273,11 @@ def ask_stream(question, uid, top_k=None):
         full_text.append(token)
         yield token
 
-    # 将 sources 附在函数对象上(调用方在生成结束后读取)
-    ask_stream.sources = [
-        {"content": r["content"], "ctime": r["ctime"], "url": r["url"]} for r in results
-    ]
+    # 将 sources 写入调用方提供的 result dict(并发安全)
+    if result is not None:
+        result["sources"] = [
+            {"content": r["content"], "ctime": r["ctime"], "url": r["url"]} for r in results
+        ]
 
     # 生成完成,保存到历史表
     try:
