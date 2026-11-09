@@ -526,6 +526,228 @@ def api_backfill():
         return _json({"error": f"补全失败: {str(e)}"}, 500)
 
 
+# ---- 批量抓取(扩库): 候选发现 + 池调度 + 后台运行 ----
+# 同时只允许一个批量任务(发现/扩库共用同一个工作线程槽位),
+# 因为都依赖 aicu/B站 限流, 并发只会互相放大等待。
+
+_expand_lock = threading.Lock()
+_expand_job = {
+    "running": False,
+    "kind": None,       # owners/reply/manual/expand
+    "log": [],          # 逐行日志(环形保留 _EXPAND_LOG_MAX 行)
+    "result": None,     # 结束产物 dict
+    "error": None,
+    "cancel": False,    # 停止信号: expand 在下个用户开始前/reply 在下个视频前生效
+    "started": None,
+    "finished": None,
+}
+_EXPAND_LOG_MAX = 3000
+
+
+def _expand_cancelled():
+    """should_stop 回调: 读取取消标志。"""
+    with _expand_lock:
+        return _expand_job.get("cancel", False)
+
+
+class _JobLog:
+    """redirect_stdout 接收端: 把 print 输出按行累积进 _expand_job["log"]。"""
+
+    _BUF = []
+
+    def write(self, s):
+        if not s:
+            return
+        cls = type(self)
+        with _expand_lock:
+            for chunk in s.splitlines(True):
+                if chunk.endswith("\n"):
+                    chunk = chunk[:-1]
+                    cls._BUF.append(chunk)
+                    _expand_job["log"].append("".join(cls._BUF))
+                    cls._BUF.clear()
+                else:
+                    cls._BUF.append(chunk)
+            del _expand_job["log"][:-_EXPAND_LOG_MAX]
+
+    def flush(self):
+        pass
+
+
+def _start_expand_job(kind, func, args=(), kwargs=None):
+    """启动批量后台任务。已有任务在跑时返回错误 dict, 否则返回 None。"""
+    kwargs = kwargs or {}
+    with _expand_lock:
+        if _expand_job["running"]:
+            return {"error": f"已有任务在运行({_expand_job['kind']}),请等待其结束"}
+        _expand_job.update(
+            running=True, kind=kind, log=[], result=None, error=None,
+            cancel=False,
+            started=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), finished=None,
+        )
+        _JobLog._BUF.clear()
+
+    def worker():
+        import contextlib
+
+        try:
+            with contextlib.redirect_stdout(_JobLog()):
+                res = func(*args, **kwargs)
+            with _expand_lock:
+                _expand_job["result"] = res
+        except Exception as e:
+            with _expand_lock:
+                _expand_job["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            with _expand_lock:
+                _expand_job["running"] = False
+                _expand_job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    threading.Thread(target=worker, daemon=True).start()
+    return None
+
+
+@app.route("/api/expand/preview")
+def api_expand_preview():
+    """三个候选来源的选取逻辑说明 + 当前实际候选数据(只读,不写池)。"""
+    import uid_discovery
+
+    owners = uid_discovery.owners_ranking(limit=20, min_refs=2)
+    videos = uid_discovery._top_oids(10)
+    manual_exists, manual_uids = uid_discovery.read_manual_file()
+
+    return _json({
+        "priority_order": ["manual(20)", "owner(50)", "reply_api(100)"],
+        "owners": {
+            "desc": "库内评论表的 video_owner_uid, 按被库内评论引用次数降序, "
+                    "引用≥2 才入选(过滤冷门UP主)",
+            "candidates": [{"uid": u, "refs": c} for u, c in owners],
+        },
+        "reply": {
+            "desc": "库内跨用户被评论最多的视频(排除失效), 拉其评论区提取评论者 uid; "
+                    "每个视频最多取 50 个, 按热度排序截断",
+            "videos": [{"oid": oid, "refs": c} for oid, c in videos],
+        },
+        "manual": {
+            "desc": "手动清单 uid_pool.txt, 每行一个 uid, # 为注释; "
+                    "优先级最高, expand 时最先抓取",
+            "file_exists": manual_exists,
+            "uids": manual_uids[:100],
+        },
+        "pool_stats": db.pool_stats(),
+    })
+
+
+@app.route("/api/expand/discover", methods=["POST"])
+def api_expand_discover():
+    """运行候选发现(后台): source=owners/reply/manual。
+    manual 支持直接传 uids 列表(页面输入框), 不依赖清单文件。
+    """
+    data = request.json or {}
+    source = data.get("source", "")
+    import uid_discovery
+
+    if source == "owners":
+        err = _start_expand_job(
+            "owners", uid_discovery.discover_from_owners,
+            (int(data.get("limit", 200)), int(data.get("min_refs", 2))),
+        )
+    elif source == "reply":
+        err = _start_expand_job(
+            "reply", uid_discovery.discover_from_reply_api,
+            (int(data.get("top_videos", 20)), int(data.get("pages", 2)),
+             int(data.get("cap", 50))),
+            kwargs={"should_stop": _expand_cancelled},
+        )
+    elif source == "manual":
+        uids = data.get("uids") or []
+        if isinstance(uids, str):
+            uids = [u.strip() for u in uids.replace(",", "\n").split("\n")]
+        uids = [int(u) for u in uids if str(u).strip().isdigit()]
+        if not uids:
+            return _json({"error": "请输入至少一个数字 uid"}, 400)
+        err = _start_expand_job(
+            "manual",
+            lambda: None if db.pool_add_uids(uids, "manual", 20) else None,
+        )
+        # manual 无 print 产物, 直接记录结果
+        if not err:
+            with _expand_lock:
+                _expand_job["log"].append(
+                    f"[manual] 输入 {len(uids)} 个 uid, 完成后看池状态"
+                )
+    else:
+        return _json({"error": "source 必须是 owners/reply/manual"}, 400)
+
+    if err:
+        return _json(err, 409)
+    return _json({"success": True, "kind": source})
+
+
+@app.route("/api/expand/start", methods=["POST"])
+def api_expand_start():
+    """启动批量入库(后台): 从池中按优先级抓取候选。"""
+    data = request.json or {}
+    limit = max(1, int(data.get("limit", 50)))
+    max_attempts = max(1, int(data.get("max_attempts", 3)))
+    err = _start_expand_job(
+        "expand", ingest.expand_ingest, (limit, max_attempts, True),
+        kwargs={"should_stop": _expand_cancelled},
+    )
+    if err:
+        return _json(err, 409)
+    return _json({"success": True, "limit": limit, "max_attempts": max_attempts})
+
+
+@app.route("/api/expand/cancel", methods=["POST"])
+def api_expand_cancel():
+    """优雅停止当前任务: expand 在当前用户处理完后停止, reply 在当前视频后停止。
+    任务结束时状态已落库, 池中剩余候选下次续跑。
+    """
+    with _expand_lock:
+        if not _expand_job["running"]:
+            return _json({"error": "当前没有运行中的任务"}, 400)
+        if _expand_job["kind"] in ("owners", "manual"):
+            return _json({"error": "该发现任务通常几秒内完成, 无需停止"}, 400)
+        _expand_job["cancel"] = True
+        kind = _expand_job["kind"]
+    print(f"[expand-api] 收到停止请求({kind})")
+    return _json({"success": True,
+                  "msg": "停止信号已发出, 当前用户/视频处理完后停止"})
+
+
+@app.route("/api/expand/status")
+def api_expand_status():
+    """轮询批量任务状态与日志(支持 offset 增量拉取)。"""
+    offset = request.args.get("offset", "0")
+    try:
+        offset = max(0, int(offset))
+    except ValueError:
+        offset = 0
+    with _expand_lock:
+        log_text = "\n".join(_expand_job["log"])
+        resp = {
+            "running": _expand_job["running"],
+            "kind": _expand_job["kind"],
+            "cancel": _expand_job.get("cancel", False),
+            "started": _expand_job["started"],
+            "finished": _expand_job["finished"],
+            "log": log_text[offset:],
+            "offset": len(log_text),
+            "result": _expand_job["result"],
+            "error": _expand_job["error"],
+        }
+    resp["pool_stats"] = db.pool_stats()
+    return _json(resp)
+
+
+@app.route("/api/expand/pool")
+def api_expand_pool():
+    """候选池明细(带来源/状态/尝试次数/错误)。"""
+    rows = db.pool_list(limit=200)
+    return _json({"stats": db.pool_stats(), "rows": rows})
+
+
 # ---- 用户画像 ----
 
 

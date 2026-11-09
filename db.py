@@ -122,6 +122,34 @@ CREATE TABLE IF NOT EXISTS `dead_video` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+_VIDEO_INFO_SCHEMA = """
+CREATE TABLE IF NOT EXISTS `video_info` (
+  oid        BIGINT      NOT NULL COMMENT '视频oid',
+  owner_uid  BIGINT      DEFAULT NULL COMMENT '视频UP主uid',
+  tid        INT         DEFAULT NULL COMMENT '视频分区ID',
+  tname      VARCHAR(50) DEFAULT NULL COMMENT '视频分区名',
+  tags       JSON        DEFAULT NULL COMMENT '视频标签列表',
+  fetched_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '解析时间',
+  PRIMARY KEY (oid),
+  KEY idx_owner (owner_uid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+_UID_POOL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS `uid_pool` (
+  uid           BIGINT      NOT NULL COMMENT '候选B站用户uid',
+  source        VARCHAR(30) NOT NULL DEFAULT 'manual' COMMENT '来源: owner/reply_api/manual',
+  status        VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT 'pending/ingested/failed/skip',
+  priority      INT         NOT NULL DEFAULT 100 COMMENT '越小越优先',
+  attempts      INT         NOT NULL DEFAULT 0 COMMENT '已尝试次数',
+  last_error    VARCHAR(300) DEFAULT NULL COMMENT '最近一次失败原因',
+  discovered_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '入池时间',
+  ingested_at   DATETIME    DEFAULT NULL COMMENT '入库完成时间',
+  PRIMARY KEY (uid),
+  KEY idx_status (status, priority)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 
 def get_conn():
     return pymysql.connect(**MYSQL, autocommit=False)
@@ -158,6 +186,8 @@ def ensure_tables(uid):
     migrate_danmu_table(uid)
     # 增量入库状态表
     ensure_ingest_state_table()
+    # video_info 持久缓存表
+    ensure_video_info_table()
 
 
 def _add_column_if_missing(conn, tbl, col_name, col_def, index_def=None):
@@ -412,6 +442,240 @@ def clear_dead_videos(uid=None):
         return deleted
     except pymysql.err.ProgrammingError:
         return 0
+    finally:
+        conn.close()
+
+
+# ---- video_info 持久化缓存 ----
+# get_video_info 的解析结果跨用户/跨进程复用: 命中缓存就不打 B站 API。
+
+_video_info_ready = False   # 进程内懒加载标记, 避免每次读写都发 CREATE
+
+
+def ensure_video_info_table():
+    """创建 video_info 缓存表(若不存在)。进程内只真正执行一次。"""
+    global _video_info_ready
+    if _video_info_ready:
+        return
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_VIDEO_INFO_SCHEMA)
+        conn.commit()
+        _video_info_ready = True
+    finally:
+        conn.close()
+
+
+def get_video_info_cached(oid):
+    """读 video_info 缓存。命中返回 dict,未命中返回 None。"""
+    ensure_video_info_table()
+    conn = get_conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT owner_uid, tid, tname, tags FROM `video_info` WHERE oid=%s",
+                (oid,),
+            )
+            row = cur.fetchone()
+    except pymysql.err.ProgrammingError:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    tags = row.get("tags")
+    if isinstance(tags, str):
+        try:
+            import json
+            tags = json.loads(tags)
+        except Exception:
+            tags = None
+    return {
+        "owner_uid": row.get("owner_uid"),
+        "tid": row.get("tid"),
+        "tname": row.get("tname"),
+        "tags": tags,
+    }
+
+
+def save_video_info(oid, info):
+    """写入/更新 video_info 缓存。NULL 字段不覆盖已有值。"""
+    ensure_video_info_table()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO `video_info` (oid, owner_uid, tid, tname, tags) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE "
+                "owner_uid=COALESCE(VALUES(owner_uid), owner_uid), "
+                "tid=COALESCE(VALUES(tid), tid), "
+                "tname=COALESCE(VALUES(tname), tname), "
+                "tags=COALESCE(VALUES(tags), tags)",
+                (
+                    oid,
+                    info.get("owner_uid"),
+                    info.get("tid"),
+                    info.get("tname"),
+                    _json_safe(info.get("tags")) if info.get("tags") else None,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---- uid 候选池 ----
+# 扩库调度: 候选 uid 入池, expand 命令按优先级逐个抓取, 状态落库可续跑。
+
+def ensure_uid_pool_table():
+    """创建 uid_pool 表(若不存在)。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_UID_POOL_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def pool_add_uids(uids, source="manual", priority=100):
+    """把候选 uid 加入池中(已存在的不改状态)。返回新增条数。
+    uids: 可迭代 int/str。"""
+    ensure_uid_pool_table()
+    conn = get_conn()
+    added = 0
+    try:
+        with conn.cursor() as cur:
+            for u in uids:
+                try:
+                    u = int(u)
+                except (TypeError, ValueError):
+                    continue
+                if u <= 0:
+                    continue
+                cur.execute(
+                    "INSERT IGNORE INTO `uid_pool` (uid, source, priority) "
+                    "VALUES (%s, %s, %s)",
+                    (u, source, priority),
+                )
+                added += cur.rowcount
+        conn.commit()
+        return added
+    finally:
+        conn.close()
+
+
+def pool_next_pending(limit=1, max_attempts=3):
+    """按优先级取下一个待处理候选(含失败重试)。
+    取 status IN (pending, failed) 且 attempts < max_attempts 的记录,
+    失败过的排在自己优先级内的后面(按 attempts 升序)。
+    返回 list[dict]。
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT uid, source, attempts, priority FROM `uid_pool` "
+                "WHERE status IN ('pending','failed') AND attempts < %s "
+                "ORDER BY priority ASC, attempts ASC, discovered_at ASC LIMIT %s",
+                (max_attempts, limit),
+            )
+            return cur.fetchall()
+    except pymysql.err.ProgrammingError:
+        return []
+    finally:
+        conn.close()
+
+
+def pool_set_status(uid, status, error=None, done=False):
+    """更新池中 uid 状态。
+    done=True 表示本次入库成功, attempts 不额外累加且记录 ingested_at;
+    否则 attempts + 1 并记录失败原因。
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if done:
+                cur.execute(
+                    "UPDATE `uid_pool` SET status='ingested', last_error=NULL, "
+                    "ingested_at=NOW() WHERE uid=%s",
+                    (uid,),
+                )
+            else:
+                cur.execute(
+                    "UPDATE `uid_pool` SET status=%s, attempts=attempts+1, "
+                    "last_error=%s WHERE uid=%s",
+                    (status, (error or "")[:300], uid),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def pool_skip_ingested():
+    """把池中已在库内的 uid 直接标记为 ingested(去重)。返回标记条数。"""
+    conn = get_conn()
+    marked = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT uid FROM `uid_pool` WHERE status IN ('pending','failed')"
+            )
+            uids = [r[0] for r in cur.fetchall()]
+        for uid in uids:
+            tbl = comment_table(uid)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT 1 FROM `{tbl}` LIMIT 1")
+                    cur.execute(
+                        "UPDATE `uid_pool` SET status='ingested', ingested_at=NOW() "
+                        "WHERE uid=%s",
+                        (uid,),
+                    )
+                    marked += cur.rowcount
+                    conn.commit()
+            except pymysql.err.ProgrammingError:
+                continue
+        return marked
+    finally:
+        conn.close()
+
+
+def pool_stats():
+    """池状态统计: {status: count}。"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status, COUNT(*) FROM `uid_pool` GROUP BY status")
+            return {status: cnt for status, cnt in cur.fetchall()}
+    except pymysql.err.ProgrammingError:
+        return {}
+    finally:
+        conn.close()
+
+
+def pool_list(status=None, limit=50):
+    """列出池中候选(按优先级)。可按 status 过滤。返回 list[dict]。"""
+    conn = get_conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            if status:
+                cur.execute(
+                    "SELECT * FROM `uid_pool` WHERE status=%s "
+                    "ORDER BY priority ASC, discovered_at ASC LIMIT %s",
+                    (status, limit),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM `uid_pool` "
+                    "ORDER BY priority ASC, discovered_at ASC LIMIT %s",
+                    (limit,),
+                )
+            return cur.fetchall()
+    except pymysql.err.ProgrammingError:
+        return []
     finally:
         conn.close()
 

@@ -238,6 +238,16 @@ def get_video_info(oid, skip_dead=None, mark_dead=None, uid=None, kind=None):
     if failed and time.time() - failed[0] < _FAIL_COOLDOWN:
         return failed[1]
 
+    # 持久缓存(video_info 表): 跨用户/跨进程复用, 命中就不打 B站 API
+    try:
+        import db as _db
+        cached = _db.get_video_info_cached(oid)
+        if cached is not None and (cached.get("tid") is not None or cached.get("tags")):
+            _video_info_cache[oid] = cached
+            return cached
+    except Exception:
+        pass  # 缓存读写失败不影响主流程
+
     # 1) 从 view API 获取 owner_uid, tid (tname 已停发, 见下)
     data, err = _api_get(f"https://api.bilibili.com/x/web-interface/view?aid={oid}")
     if err:
@@ -265,6 +275,12 @@ def get_video_info(oid, skip_dead=None, mark_dead=None, uid=None, kind=None):
 
     result = {"owner_uid": owner_uid, "tid": tid, "tname": tname, "tags": tags}
     _video_info_cache[oid] = result
+    # 回写持久缓存, 供后续用户/进程复用
+    try:
+        import db as _db
+        _db.save_video_info(oid, result)
+    except Exception:
+        pass
     return result
 
 
@@ -815,29 +831,39 @@ def _collect_kind(page, kind, uid):
     return records, total
 
 
-def scrape_uid(uid, kinds=("comment", "danmu"), headless=True, totals=None):
+def scrape_uid(uid, kinds=("comment", "danmu"), headless=True, totals=None, page=None):
     """抓取指定 uid 的评论/弹幕,返回 {kind: [records]}。同时落 JSON 便于核对。
 
     totals: 可选 dict, 调用方传入后会被填入 {kind: 站点报告总数}(用于判断抓取完整性)。
+    page:   可选, 复用调用方已打开的 Playwright page(批量模式省去反复开浏览器)。
+            不传则自行启动浏览器。
     不依赖 MySQL/Chroma,纯抓取,可单独验证。
     """
-    out = {}
+    if page is not None:
+        return _scrape_with_page(page, uid, kinds, totals)
     with sync_playwright() as p:
         b = p.chromium.launch(headless=headless)
         ctx = b.new_context(
             user_agent=_UA, viewport={"width": 1366, "height": 900}, locale="zh-CN"
         )
         page = ctx.new_page()
-        for kind in kinds:
-            if kind not in PAGES:
-                continue
-            recs, total = _collect_kind(page, kind, uid)
-            out[kind] = recs
-            if totals is not None:
-                totals[kind] = total
-            print(f"[{kind}] uid={uid} 抓到 {len(recs)} 条(站点报告总数={total})")
-            _dump_json(uid, kind, recs)
+        out = _scrape_with_page(page, uid, kinds, totals)
         b.close()
+    return out
+
+
+def _scrape_with_page(page, uid, kinds, totals=None):
+    """在给定 page 上依次抓取各 kind(供单次/批量共用)。"""
+    out = {}
+    for kind in kinds:
+        if kind not in PAGES:
+            continue
+        recs, total = _collect_kind(page, kind, uid)
+        out[kind] = recs
+        if totals is not None:
+            totals[kind] = total
+        print(f"[{kind}] uid={uid} 抓到 {len(recs)} 条(站点报告总数={total})")
+        _dump_json(uid, kind, recs)
     return out
 
 
@@ -881,7 +907,8 @@ def _sample(rec, kind):
 
 
 def ingest_uid(
-    uid, kinds=("comment", "danmu"), max_pages=None, headless=True, overwrite=False
+    uid, kinds=("comment", "danmu"), max_pages=None, headless=True, overwrite=False,
+    page=None,
 ):
     """抓取 + 入 MySQL + 入 Chroma。
 
@@ -929,7 +956,7 @@ def ingest_uid(
             print(f"[{kind}] 全量模式(首次抓取或无 watermark)")
 
     totals = {}
-    data = scrape_uid(uid, kinds=kinds, headless=headless, totals=totals)
+    data = scrape_uid(uid, kinds=kinds, headless=headless, totals=totals, page=page)
 
     result = {"fetched": {}, "inserted": {}, "samples": {}, "incremental": incremental}
     for kind, records in data.items():
@@ -1101,6 +1128,91 @@ def _update_watermark(uid, kind, records, old_watermark, complete=True):
     if old_watermark is None or max_ctime > old_watermark:
         db.set_ingest_state(uid, kind, max_ctime)
         print(f"[{kind}] watermark 更新为 {max_ctime.strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+def expand_ingest(
+    limit=50, max_attempts=3, headless=True, kinds=("comment", "danmu"),
+    fail_stop=3, should_stop=None,
+):
+    """批量扩库调度: 从 uid_pool 取 pending 候选逐个入库, 浏览器全程复用。
+
+    limit:        本次最多成功入库多少个用户
+    max_attempts: 单个 uid 最大尝试次数, 超过标记 skip
+    fail_stop:    连续失败 N 个则中止运行(大概率是 aicu 拦截, 继续无意义)
+    should_stop:  可选回调, 返回 True 时在"下一个用户开始前"优雅停止
+                  (当前用户照常抓完入库, 状态落库)
+    状态落库, 中断后重跑可续。
+
+    返回 dict: {done, failed, skipped, stopped}
+    """
+    import db
+
+    db.ensure_uid_pool_table()
+    # 已在库内的候选直接去重标记, 不再浪费抓取额度
+    dedup = db.pool_skip_ingested()
+    if dedup:
+        print(f"[expand] 去重: {dedup} 个候选已在库内, 标记为 ingested")
+
+    done = failed = skipped = 0
+    consecutive_fail = 0
+    with sync_playwright() as p:
+        b = p.chromium.launch(headless=headless)
+        ctx = b.new_context(
+            user_agent=_UA, viewport={"width": 1366, "height": 900}, locale="zh-CN"
+        )
+        page = ctx.new_page()
+
+        while done < limit:
+            if should_stop is not None and should_stop():
+                print("[expand] 收到停止信号: 当前用户已处理完, 优雅停止"
+                      "(池中剩余候选下次续跑)")
+                b.close()
+                stats = db.pool_stats()
+                print(f"\n[expand] 结束(手动停止): 成功 {done}, 失败 {failed}, "
+                      f"跳过 {skipped}; 池状态 {stats}")
+                return {"done": done, "failed": failed, "skipped": skipped,
+                        "stopped": True}
+            batch = db.pool_next_pending(limit=1, max_attempts=max_attempts)
+            if not batch:
+                print("[expand] 池中没有 pending 候选, 结束")
+                break
+            item = batch[0]
+            uid = item["uid"]
+            attempts = int(item.get("attempts") or 0)
+            if attempts >= max_attempts:
+                db.pool_set_status(uid, "skip", error="重试次数用尽")
+                skipped += 1
+                continue
+
+            print(f"\n========== expand uid={uid} (source={item['source']}, "
+                  f"第 {attempts + 1}/{max_attempts} 次尝试) ==========")
+            try:
+                result = ingest_uid(uid, kinds=kinds, headless=headless, page=page)
+                inserted = sum(result.get("inserted", {}).values())
+                fetched = sum(result.get("fetched", {}).values())
+                db.pool_set_status(uid, None, done=True)
+                done += 1
+                consecutive_fail = 0
+                print(f"[expand] uid={uid} 完成: 抓到 {fetched} 条, "
+                      f"新入库 {inserted} 条 (总进度 {done}/{limit})")
+            except Exception as e:
+                msg = f"{type(e).__name__}: {e}"
+                print(f"[expand] uid={uid} 失败: {msg}")
+                db.pool_set_status(uid, "failed", error=msg)
+                failed += 1
+                consecutive_fail += 1
+                if consecutive_fail >= fail_stop:
+                    print(f"[expand] 连续失败 {consecutive_fail} 次, "
+                          f"疑似 aicu 拦截/网络异常, 中止运行(状态已落库, 可续跑)")
+                    break
+                # 失败后冷却一段时间再试下一个
+                time.sleep(30)
+        b.close()
+
+    stats = db.pool_stats()
+    print(f"\n[expand] 结束: 成功 {done}, 失败 {failed}, 跳过 {skipped}; "
+          f"池状态 {stats}")
+    return {"done": done, "failed": failed, "skipped": skipped}
 
 
 if __name__ == "__main__":

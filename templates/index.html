@@ -1306,6 +1306,11 @@
           <div class="lc-title">话题图谱</div>
           <div class="lc-desc">选定一个话题标签，查看话题下的视频、用户与关键节点</div>
         </button>
+        <button class="landing-card" onclick="showView('expand')">
+          <div class="lc-icon">📥</div>
+          <div class="lc-title">批量抓取</div>
+          <div class="lc-desc">候选发现(UP主/评论区/手动) → 池调度 → 批量入库, 实时日志</div>
+        </button>
       </div>
     </div>
 
@@ -1565,6 +1570,63 @@
         </div>
       </div>
     </div><!-- end topicView -->
+
+    <!-- 批量抓取视图(第五大功能: 候选发现 + 池调度 + 批量入库) -->
+    <div id="expandView" style="display:none">
+      <button class="back-btn" onclick="showView('landing')">← 返回首页</button>
+
+      <div class="backfill-panel">
+        <h2>批量抓取(扩库)</h2>
+        <p class="backfill-desc">
+          候选发现 → 池调度 → 批量入库(评论+弹幕, MySQL+向量库)。抓取顺序: 手动清单 &gt; UP主 &gt; 评论区挖掘;
+          失败自动重试3次; 停止或中断后重跑可续。
+        </p>
+
+        <!-- 操作条 -->
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+          <label>入库上限</label>
+          <input id="expandLimit" type="number" value="50" min="1"
+                 style="width:80px;padding:6px 10px;border:1px solid #d7dce5;border-radius:8px" />
+          <button class="bo-btn" id="btnExpandStart" onclick="startExpand()"
+                  style="background:var(--brand);color:#fff;border-color:var(--brand)">启动批量抓取</button>
+          <button class="bo-btn" id="btnExpandStop" onclick="stopExpand()" disabled>停止任务</button>
+          <span class="status" id="expandStatus"></span>
+        </div>
+
+        <!-- 候选池 -->
+        <div class="panel" id="pExpandPool">
+          <div class="panel-hd" onclick="togglePanel('pExpandPool')">
+            <h3>候选池 <span class="meta" id="expandPoolMeta"></span></h3>
+            <span class="toggle" id="pExpandPool_toggle">▾</span>
+          </div>
+          <div class="panel-bd" id="expandPoolBody">
+            <div style="text-align:center;color:#999;padding:20px">加载中…</div>
+          </div>
+        </div>
+
+        <!-- 运行日志 -->
+        <div class="panel" id="pExpand">
+          <div class="panel-hd" onclick="togglePanel('pExpand')">
+            <h3>运行日志 <span class="meta" id="expandLogMeta"></span></h3>
+            <span class="toggle" id="pExpand_toggle">▾</span>
+          </div>
+          <div class="panel-bd">
+            <pre id="expandLog" style="max-height:420px;overflow:auto;background:#0f172a;color:#d1e3ff;padding:12px;font-size:12px;line-height:1.5;white-space:pre-wrap;border-radius:8px">暂无任务。</pre>
+          </div>
+        </div>
+
+        <!-- 添加候选 -->
+        <div class="panel" id="pExpandSrc">
+          <div class="panel-hd" onclick="togglePanel('pExpandSrc')">
+            <h3>添加候选 <span class="meta" id="expandSrcMeta"></span></h3>
+            <span class="toggle" id="pExpandSrc_toggle">▾</span>
+          </div>
+          <div class="panel-bd" id="expandSources">
+            <div style="text-align:center;color:#999;padding:20px">加载中…</div>
+          </div>
+        </div>
+      </div>
+    </div><!-- end expandView -->
   </div>
 
   <!-- 选择两个用户(从用户记录视图跳转到功能5 互动分析) -->
@@ -1600,10 +1662,18 @@
       $('backfillView').style.display = view === 'backfill' ? 'block' : 'none';
       $('recordsView').style.display = view === 'records' ? 'block' : 'none';
       $('topicView').style.display = view === 'topic' ? 'block' : 'none';
+      $('expandView').style.display = view === 'expand' ? 'block' : 'none';
       if (view === 'records') { loadRecordUsers(); loadClusters(); }
       if (view === 'topic') {
         if (!topicTopicsLoaded) loadTopics();
         if (topicChart) topicChart.resize();
+      }
+      if (view === 'expand') {
+        // 三个面板默认展开(.panel 默认 display:none)
+        ['pExpandPool', 'pExpand', 'pExpandSrc'].forEach(p => $(p).classList.add('show'));
+        loadExpandPreview();
+        loadExpandPool();
+        resumeExpandPolling();
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -1656,6 +1726,197 @@
       } finally {
         btnAll.disabled = false;
         btnUids.disabled = false;
+      }
+    }
+
+    // ---- 批量抓取(扩库) ----
+    let expandPollTimer = null;
+    let expandLogOffset = 0;
+    let expandLastPoolKey = '';
+
+    async function loadExpandPreview() {
+      const box = $('expandSources');
+      try {
+        const resp = await fetch('/api/expand/preview');
+        const d = await resp.json();
+        if (d.error) { box.innerHTML = `<div class="err" style="padding:16px">${d.error}</div>`; return; }
+        const ps = d.pool_stats || {};
+        const statsLine = Object.keys(ps).length
+          ? Object.entries(ps).map(([k, v]) => k + ':' + v).join(' / ') : '空';
+        $('expandSrcMeta').textContent = '池: ' + statsLine;
+        const ownersPreview = (d.owners.candidates || []).slice(0, 3)
+          .map(c => c.uid + '(' + c.refs + '次)').join('、') || '暂无满足条件的候选';
+        const replyPreview = (d.reply.videos || []).slice(0, 3)
+          .map(v => 'oid=' + v.oid + '(' + v.refs + '次)').join('、') || '库内暂无可用视频';
+        const manualPreview = d.manual.file_exists
+          ? ((d.manual.uids || []).length + ' 个 uid') : 'uid_pool.txt 不存在(可用下方输入框)';
+        const row = (icon, title, pri, logic, preview, btnHtml) => `
+          <div style="display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px solid #eef1f6">
+            <div style="min-width:150px">${icon} ${title} <span class="meta">${pri}</span></div>
+            <div style="flex:1;color:var(--muted);font-size:13px;line-height:1.6">${logic}
+              <br><span style="color:#8a93a6">当前候选: ${preview}</span></div>
+            <div style="min-width:90px;text-align:right">${btnHtml || ''}</div>
+          </div>`;
+        box.innerHTML =
+          row('🎥', 'UP主', '优先级 50', d.owners.desc, ownersPreview,
+              `<button class="bo-btn" id="btnDiscoverOwners" onclick="runDiscover('owners')">发现</button>`) +
+          row('💬', '评论区挖掘', '优先级 100', d.reply.desc, replyPreview,
+              `<button class="bo-btn" id="btnDiscoverReply" onclick="runDiscover('reply')">发现</button>`) +
+          row('📝', '手动清单', '优先级 20', d.manual.desc, manualPreview, '') +
+          `<div style="display:flex;gap:10px;align-items:center;padding:12px 0 2px">
+             <input id="expandManualUids" type="text" placeholder="手动添加 uid, 逗号/换行分隔, 如 123456,789012"
+                    style="flex:1;padding:8px 12px;border:1px solid #d7dce5;border-radius:8px" />
+             <button class="bo-btn" onclick="addManualUids()">加入候选池</button>
+           </div>`;
+      } catch (e) {
+        box.innerHTML = `<div class="err" style="padding:16px">加载失败: ${e.message}</div>`;
+      }
+    }
+
+    async function runDiscover(source) {
+      const btn = $(source === 'owners' ? 'btnDiscoverOwners' : 'btnDiscoverReply');
+      if (btn) btn.disabled = true;
+      try {
+        const resp = await fetch('/api/expand/discover', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source })
+        });
+        const d = await resp.json();
+        if (d.error) {
+          $('expandStatus').textContent = d.error;
+          showPanel('pExpand', true);
+          return;
+        }
+        expandLogOffset = 0;
+        $('expandLog').textContent = '';
+        $('expandLogMeta').textContent = `${source} 发现中…`;
+        showPanel('pExpand', true);
+        resumeExpandPolling();
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function addManualUids() {
+      const raw = $('expandManualUids').value.trim();
+      if (!raw) { $('expandStatus').textContent = '请先输入 uid'; return; }
+      const resp = await fetch('/api/expand/discover', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'manual', uids: raw })
+      });
+      const d = await resp.json();
+      if (d.error) { $('expandStatus').textContent = d.error; return; }
+      $('expandManualUids').value = '';
+      $('expandStatus').textContent = '已加入候选池';
+      loadExpandPool();
+      loadExpandPreview();
+    }
+
+    async function startExpand() {
+      const limit = parseInt($('expandLimit').value || '50', 10);
+      const resp = await fetch('/api/expand/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit })
+      });
+      const d = await resp.json();
+      if (d.error) { $('expandStatus').textContent = d.error; return; }
+      expandLogOffset = 0;
+      $('expandLog').textContent = '';
+      $('expandLogMeta').textContent = `批量抓取中(上限 ${limit} 用户)…`;
+      $('expandStatus').textContent = '';
+      showPanel('pExpand', true);
+      resumeExpandPolling();
+    }
+
+    function resumeExpandPolling() {
+      // 页面进入视图时先查一次状态, 运行中则恢复轮询
+      pollExpand();
+    }
+
+    async function stopExpand() {
+      try {
+        const resp = await fetch('/api/expand/cancel', { method: 'POST' });
+        const d = await resp.json();
+        $('expandStatus').textContent = d.msg || d.error || '';
+        if (d.success) {
+          const btn = $('btnExpandStop');
+          if (btn) btn.disabled = true;
+        }
+      } catch (e) {
+        $('expandStatus').textContent = '停止请求失败: ' + e.message;
+      }
+    }
+
+    async function pollExpand() {
+      try {
+        const resp = await fetch(`/api/expand/status?offset=${expandLogOffset}`);
+        const d = await resp.json();
+        if (d.log) {
+          const box = $('expandLog');
+          box.textContent += d.log;
+          box.scrollTop = box.scrollHeight;
+          expandLogOffset = d.offset;
+        }
+        const KIND_LABEL = { owners: '发现(UP主)', reply: '发现(评论区)', manual: '发现(手动)', expand: '批量抓取' };
+        const SOURCE_LABEL = { owner: 'UP主', reply_api: '评论区', manual: '手动' };
+        const state = d.running
+          ? (d.cancel ? '停止中…' : '运行中')
+          : (d.error ? `失败: ${d.error}` : '空闲');
+        $('expandLogMeta').textContent =
+          `${KIND_LABEL[d.kind] || d.kind || '-'} · ${state}` +
+          (d.started ? ` · 开始 ${d.started.slice(11)}` : '') +
+          (d.finished ? ` · 结束 ${d.finished.slice(11)}` : '');
+        const stopBtn = $('btnExpandStop');
+        if (stopBtn) stopBtn.disabled = !d.running || !!d.cancel;
+        if (d.running && !expandPollTimer) {
+          expandPollTimer = setInterval(pollExpand, 2000);
+        } else if (!d.running && expandPollTimer) {
+          clearInterval(expandPollTimer);
+          expandPollTimer = null;
+          // 任务结束时刷新池与来源预览
+          loadExpandPool();
+          loadExpandPreview();
+        }
+        // 池统计变化时刷新池表
+        const key = JSON.stringify(d.pool_stats || {});
+        if (key !== expandLastPoolKey) {
+          expandLastPoolKey = key;
+          loadExpandPool();
+        }
+      } catch (e) { /* 轮询失败静默, 下次重试 */ }
+    }
+
+    async function loadExpandPool() {
+      const body = $('expandPoolBody');
+      try {
+        const resp = await fetch('/api/expand/pool');
+        const d = await resp.json();
+        const stats = d.stats || {};
+        const summary = Object.keys(stats).length
+          ? Object.entries(stats).map(([k, v]) => `${k}:${v}`).join(' / ') : '空';
+        $('expandPoolMeta').textContent = summary;
+        const rows = d.rows || [];
+        if (!rows.length) {
+          body.innerHTML = '<div style="text-align:center;color:#999;padding:20px">候选池为空。先用上方来源的「开始发现」或手动添加。</div>';
+          return;
+        }
+        const color = s => ({ ingested: 'var(--ok)', failed: 'var(--err)', pending: 'var(--muted)', skip: 'var(--muted)' }[s] || 'inherit');
+        const SOURCE_LABEL = { owner: 'UP主', reply_api: '评论区', manual: '手动' };
+        body.innerHTML = `
+          <table class="data" style="width:100%">
+            <tr><th>uid</th><th>来源</th><th>状态</th><th>尝试</th><th>入池时间</th><th>最近错误</th></tr>
+            ${rows.map(r => `
+              <tr>
+                <td class="c">${r.uid}</td>
+                <td class="c">${SOURCE_LABEL[r.source] || r.source}</td>
+                <td class="c" style="color:${color(r.status)}">${r.status}</td>
+                <td class="c">${r.attempts}</td>
+                <td class="c">${(r.discovered_at || '').slice(5, 16)}</td>
+                <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)">${r.last_error || ''}</td>
+              </tr>`).join('')}
+          </table>`;
+      } catch (e) {
+        body.innerHTML = `<div class="err" style="padding:16px">加载失败: ${e.message}</div>`;
       }
     }
 

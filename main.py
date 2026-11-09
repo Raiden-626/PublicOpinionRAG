@@ -70,6 +70,30 @@ def main():
     p_rd = sub.add_parser("repair-dead", help="给 dead_video 表补 uid/kind")
     p_rd.add_argument("--write", action="store_true", help="真正写库(默认只预览)")
 
+    p_dis = sub.add_parser("discover", help="发现候选uid入池(owners/reply/manual)")
+    p_dis.add_argument("source", choices=["owners", "reply", "manual"],
+                       help="owners=库内UP主; reply=高频视频评论区挖掘(B站API,3s限流); "
+                            "manual=手动清单 uid_pool.txt")
+    p_dis.add_argument("--limit", type=int, default=200, help="owners 最大入池数")
+    p_dis.add_argument("--min-refs", type=int, default=2,
+                       help="owners 最少被引用次数")
+    p_dis.add_argument("--top-videos", type=int, default=20,
+                       help="reply 挖掘的视频数(取库内被评论最多的)")
+    p_dis.add_argument("--pages", type=int, default=2, help="reply 每视频页数")
+    p_dis.add_argument("--cap", type=int, default=50, help="reply 每视频uid上限")
+    p_dis.add_argument("--file", default=None, help="manual 清单路径")
+
+    p_ex = sub.add_parser("expand", help="批量入库: 按池优先级逐个抓取候选uid")
+    p_ex.add_argument("--limit", type=int, default=50,
+                      help="本次最多成功入库多少个用户(默认50)")
+    p_ex.add_argument("--max-attempts", type=int, default=3,
+                      help="单个uid最大尝试次数")
+    p_ex.add_argument("--kinds", default="comment,danmu")
+    p_ex.add_argument("--headful", action="store_true",
+                      help="有头浏览器(无头被 aicu 拦截时用)")
+
+    sub.add_parser("pool", help="查看 uid 候选池状态")
+
     args = ap.parse_args()
 
     if args.cmd == "initdb":
@@ -207,6 +231,48 @@ def main():
               f"找不到来源 {st['unresolved']}")
         if not args.write:
             print("(预览模式, 加 --write 才会写库)")
+
+    elif args.cmd == "discover":
+        import uid_discovery
+
+        if args.source == "owners":
+            uid_discovery.discover_from_owners(limit=args.limit, min_refs=args.min_refs)
+        elif args.source == "reply":
+            uid_discovery.discover_from_reply_api(
+                top_videos=args.top_videos,
+                per_video_pages=args.pages,
+                per_video_cap=args.cap,
+            )
+        else:
+            uid_discovery.discover_from_manual(args.file)
+        import db
+        print(f"\n当前池状态: {db.pool_stats()}")
+
+    elif args.cmd == "expand":
+        import ingest
+
+        kinds = tuple(k.strip() for k in args.kinds.split(",") if k.strip())
+        ingest.expand_ingest(
+            limit=args.limit,
+            max_attempts=args.max_attempts,
+            headless=not args.headful,
+            kinds=kinds,
+        )
+
+    elif args.cmd == "pool":
+        import db
+
+        stats = db.pool_stats()
+        if not stats:
+            print("候选池为空。先用 discover owners / reply / manual 入池。")
+            return
+        print("池状态:", stats)
+        rows = db.pool_list(limit=100)
+        print(f"\n{'uid':>12}  {'source':<10} {'status':<9} {'att':>3}  发现时间        最近错误")
+        for r in rows:
+            print(f"{r['uid']:>12}  {r['source']:<10} {r['status']:<9} "
+                  f"{r['attempts']:>3}  {str(r['discovered_at'])[:16]}  {r['last_error'] or ''}")
+
 
 
 if __name__ == "__main__":
